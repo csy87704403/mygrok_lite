@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 敏感凭据
+.env
+.env.*
+!.env.example
+.git-credentials
+*.bak
+
+# 数据 (不纳入版本控制)
+data/
+grok_accounts/
+*.db
+*.db-wal
+*.db-shm
+*.log
+*.pid
+
+# 构建产物/时间戳 bundle
+static/*.20[0-9][0-9][0-9][0-9][0-9][0-9]*.js
+static/*.20[0-9][0-9][0-9][0-9][0-9][0-9]*.css
+
+# OS
+.DS_Store

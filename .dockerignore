@@ -1,0 +1,17 @@
+# 排除敏感数据与构建产物
+.git
+**/__pycache__/
+*.pyc
+data/
+grok_accounts/
+.env
+.env.*
+!.env.example
+*.bak
+*.log
+*.pid
+*.db
+*.db-wal
+*.db-shm
+static/*.2026*.js
+static/*.2026*.css

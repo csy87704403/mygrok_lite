@@ -1,0 +1,32 @@
+# Grok 账号管理平台 - docker-compose 部署
+# 前提: 宿主机已跑 Mihomo 代理节点 (端口 8001-8092), 平台通过 host 网络直连节点
+version: "3.8"
+
+services:
+  grok-platform:
+    build: .
+    container_name: grok-platform
+    restart: unless-stopped
+    # host 网络: 让容器直接访问宿主机的 Mihomo 代理节点 (127.0.0.1:8001-8092)
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      # 挂载卷路径 (与容器内一致)
+      GROK_ACCOUNTS_DIR: /root/grok_accounts
+    volumes:
+      # 账号产出物 (CPA 等) - 持久化
+      - ./grok_accounts:/root/grok_accounts
+      # 平台数据 (SQLite 数据库等) - 持久化
+      - ./data:/app/data
+    ports:
+      # network_mode host 下端口映射无效, 直接暴露宿主端口; 这里仅作说明
+      - "18080:18080"
+    shm_size: "1gb"
+    # 健康检查 (需容器有 curl 或 wget)
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://127.0.0.1:18080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s

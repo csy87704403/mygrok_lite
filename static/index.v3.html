@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Grok 账号管理平台</title>
+<link rel="stylesheet" href="/static/style.v3.css">
+</head>
+<body>
+<div id="login-view" class="login-wrap">
+  <div class="login-card">
+    <h2>Grok 账号管理平台</h2>
+    <input id="admin-pass" type="password" placeholder="管理密码">
+    <button id="login-btn">登录</button>
+    <div id="login-err" class="err"></div>
+  </div>
+</div>
+
+<div id="app-view" style="display:none">
+  <header class="topbar">
+    <h1>Grok 账号管理</h1>
+    <span class="spacer"></span>
+    <button class="tab-btn active" data-tab="accounts">账号</button>
+    <button class="tab-btn" data-tab="register">注册</button>
+    <button class="tab-btn" data-tab="keys">API Keys</button>
+    <button class="tab-btn" data-tab="usage">用量</button>
+    <button class="tab-btn" data-tab="nodes">节点池</button>
+    <button class="tab-btn" data-tab="settings">设置</button>
+    <button class="logout">退出</button>
+  </header>
+  <main>
+    <div id="tab-accounts" class="tab-panel active"></div>
+    <div id="tab-register" class="tab-panel"></div>
+    <div id="tab-keys" class="tab-panel"></div>
+    <div id="tab-usage" class="tab-panel"></div>
+    <div id="tab-nodes" class="tab-panel"></div>
+    <div id="tab-settings" class="tab-panel"></div>
+  </main>
+</div>
+<div id="relogin-panel"></div>
+<div id="toast" class="toast"></div>
+<script src="/static/app.v3.js"></script>
+</body>
+</html>
