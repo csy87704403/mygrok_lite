@@ -3,7 +3,7 @@
 FROM python:3.11-slim-bookworm
 
 LABEL org.opencontainers.image.description="Grok 账号管理平台 (OpenAI 兼容 API 网关 + 批量账号注册/续期/降级)"
-LABEL org.opencontainers.image.source="https://github.com/YOUR_USERNAME/grok-platform"
+LABEL org.opencontainers.image.source="https://github.com/csy87704403/mygrok_lite"
 
 # 系统依赖: Xvfb(虚拟显示) + xdotool(物理点击兜底) + 浏览器运行库 + 中文字体
 RUN apt-get update && apt-get install -y --no-install-recommends \
