@@ -139,10 +139,20 @@ def seed_default_mail_domains():
     conn.commit()
     conn.close()
 
-# 默认节点池 (Docker Desktop/WSL2 适配: mihomo 容器同网络, 通过容器名访问)
-DEFAULT_NODES = [
-    "mihomo:8001", "mihomo:8002"
-]
+# 默认节点池: 通过环境变量 GROK_DEFAULT_NODES 配置 (逗号分隔)
+#   - Linux/host 网络: 宿主机 Mihomo 端口 (如 8001,8002,8003...) 或留空用原版默认
+#   - Docker Desktop/WSL2: mihomo 容器名 (如 mihomo:8001,mihomo:8002)
+import os as _os
+_env_nodes = _os.environ.get("GROK_DEFAULT_NODES", "").strip()
+if _env_nodes:
+    DEFAULT_NODES = [n.strip() for n in _env_nodes.split(",") if n.strip()]
+else:
+    # 原版默认: 宿主机 Mihomo 端口池
+    DEFAULT_NODES = [
+        "8047","8063","8037","8011","8020","8050","8074","8081","8090","8040","8023",
+        "8001","8002","8003","8005","8008","8010","8012","8015","8018","8022",
+        "8078","8079","8082","8083","8085","8086","8087","8089","8091","8092"
+    ]
 
 def seed_default_nodes():
     conn = get_conn()

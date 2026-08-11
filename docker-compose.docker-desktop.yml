@@ -1,0 +1,35 @@
+# Grok 账号管理平台 - Docker Desktop / WSL2 适配版 (override 文件)
+# 用法: docker compose -f docker-compose.yml -f docker-compose.docker-desktop.yml up -d
+# 与 Linux 版差异:
+#   1. host 网络 -> bridge + ports 映射 (Docker Desktop 下 host 网络不会发布端口到 Windows)
+#   2. Mihomo 作为容器同网络运行, 平台通过 mihomo:8001 访问节点
+#   3. 数据卷使用 named volumes (WSL2 VM ext4, 持久化更稳)
+services:
+  grok-platform:
+    # 覆盖网络模式: host -> bridge (默认 bridge 即可, 显式声明)
+    network_mode: bridge
+    ports:
+      - "18080:18080"
+    volumes:
+      # 覆盖: 目录挂载 -> named volumes (WSL2 ext4)
+      - grok_accounts:/root/grok_accounts
+      - platform_data:/app/data
+    depends_on:
+      - mihomo
+
+  # Mihomo 代理节点容器 (同网络, 平台通过 mihomo:8001 访问)
+  # 与平台同一 bridge 网络, 容器名 DNS 互访; 不发布端口到外部 (仅平台内部使用)
+  mihomo:
+    image: metacubex/mihomo:latest
+    container_name: mygrok-lite-mihomo
+    restart: unless-stopped
+    volumes:
+      - ./mihomo:/root/.config/mihomo
+    cap_add:
+      - NET_ADMIN
+
+volumes:
+  grok_accounts:
+    name: mygrok_lite_grok_accounts
+  platform_data:
+    name: mygrok_lite_platform_data
