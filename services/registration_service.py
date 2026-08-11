@@ -336,7 +336,7 @@ class RegistrationManager:
         env['GROK_MAIL_CONFIG'] = json.dumps(mails, ensure_ascii=False)
 
         proc = subprocess.Popen(
-            ['/usr/bin/python3.11', script],
+            ['/usr/local/bin/python3.11', script],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1, env=env, cwd='/tmp',
             start_new_session=True,  # 独立进程组, kill时可连浏览器一起杀

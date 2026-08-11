@@ -7,6 +7,12 @@ refresh.settings = async function() {
     const s = await api('/api/settings/cpa');
     cpa = s.data || cpa;
   } catch(e) {}
+  // 加载自动补号状态
+  let af = { enabled: false, trigger_threshold: 5, target_dispatchable: 30, last_result: null, in_progress: false };
+  try {
+    const s = await api('/api/auto-fill/status');
+    af = s.data || af;
+  } catch(e) {}
 
   el.innerHTML = `
   <div class="card">
@@ -56,15 +62,47 @@ refresh.settings = async function() {
   </div>
 
   <div class="card">
+    <h3>🔁 自动补号</h3>
+    <div style="display:flex;align-items:center;gap:10px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+        <input type="checkbox" id="auto-fill-enabled" ${af.enabled?'checked':''} onchange="autoFillToggle()">
+        启用自动补号（可调度号 ≤ <span id="af-threshold">${af.trigger_threshold||5}</span> 时自动注册补至 <span id="af-target">${af.target_dispatchable||30}</span> 个）
+      </label>
+      <span id="af-status" style="font-size:12px;${af.enabled?'color:#16a34a':'color:#94a3b8'}">${af.in_progress?'⏳ 补号进行中':(af.enabled?'✅ 已启用':'未启用')}</span>
+    </div>
+    <div id="af-result" style="font-size:12px;color:#94a3b8;margin-top:8px">${af.last_result?('上次补号: '+esc(af.last_result.summary||'')):''}</div>
+  </div>
+
+  <div class="card">
     <h3>ℹ️ 说明</h3>
     <div style="font-size:12px;color:#94a3b8;line-height:1.8">
       • <b>本地 CPA</b>: 从指定路径复制 cpa_*.json 文件到平台 CPA 目录并导入账号库<br>
       • <b>远程 CPA</b>: 从 WebDAV/HTTP 目录拉取 cpa_*.json (需支持 Basic Auth 或匿名访问)<br>
       • <b>导入 CPA</b>: 按当前勾选的模式, 将有效的 CPA 文件导入平台 (去重, 已存在账号自动更新)<br>
+      • <b>自动补号</b>: 仅当勾选"启用自动补号"后才生效, 可调度号不足时自动批量注册补号<br>
       • 修改密码后, 下次登录使用新密码 (旧密码立即失效)
     </div>
   </div>`;
 };
+
+async function autoFillToggle() {
+  const cb = document.getElementById('auto-fill-enabled');
+  const res = document.getElementById('af-result');
+  const status = document.getElementById('af-status');
+  try {
+    const r = await api('/api/auto-fill/set-enabled', 'POST', { enabled: cb.checked });
+    const d = r.data || {};
+    const on = d.enabled === true;
+    status.textContent = on ? '✅ 已启用' : '未启用';
+    status.style.color = on ? '#16a34a' : '#94a3b8';
+    res.textContent = on ? '已启用, 可调度号不足时将自动补号' : '已关闭, 不再自动补号';
+    res.style.color = '#16a34a';
+  } catch(e) {
+    cb.checked = !cb.checked;
+    res.textContent = '设置失败: ' + (e.message || e);
+    res.style.color = '#dc2626';
+  }
+}
 
 function cpaModeChange() {
   const mode = document.querySelector('input[name="cpa-mode"]:checked').value;

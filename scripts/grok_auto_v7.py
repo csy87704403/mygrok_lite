@@ -123,7 +123,15 @@ def main():
         candidates = [n for n in NODES if n not in tried] or NODES
         port = random.choice(candidates)
         tried.add(port)
-        proxy=f"http://127.0.0.1:{port}"
+        # 代理地址: 兼容两种节点格式
+        #   - 纯数字端口 (如 8078) -> 本地 127.0.0.1:8078
+        #   - host:port 或 容器名:port (如 mihomo:8108) -> http://mihomo:8108
+        if '://' in str(port):
+            proxy = port  # 已带协议 (http://... / socks5://...)
+        elif ':' in str(port):
+            proxy = f"http://{port}"
+        else:
+            proxy = f"http://127.0.0.1:{port}"
         seed=random.randint(10000,99999)
         tz=random.choice(TZ_POOL)
         email,jwt,mail_base=create_mail()
@@ -317,7 +325,7 @@ def main():
                 import urllib.parse, base64, hashlib
                 from curl_cffi import requests as cffi2
                 s = cffi2.Session(impersonate='chrome131')
-                s.proxies = {'http': f'http://127.0.0.1:{port}', 'https': f'http://127.0.0.1:{port}'}
+                s.proxies = {'http': proxy, 'https': proxy}
                 s.headers.update({'user-agent': sso2cpa.UA, 'accept': '*/*',
                                   'origin': 'https://accounts.x.ai', 'referer': 'https://accounts.x.ai/'})
                 dev_ep, tok_ep, auth_ep = sso2cpa.discover(s)
@@ -352,7 +360,7 @@ def main():
                 print(f'❌ CPA 转换异常: {str(e)[:150]}', flush=True)
             # 自动刷新 SUMMARY.md
             try:
-                subprocess.run(['/usr/bin/python3.11','/tmp/gen_summary.py'], capture_output=True, timeout=30)
+                subprocess.run(['/usr/local/bin/python3.11','/tmp/gen_summary.py'], capture_output=True, timeout=30)
                 print('✅ SUMMARY.md 已自动刷新', flush=True)
             except Exception as e:
                 print(f'⚠️ SUMMARY 刷新失败: {str(e)[:80]}', flush=True)

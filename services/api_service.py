@@ -707,7 +707,11 @@ def _refresh_single_quota(email, node_port=None):
                             'x-grok-client-version': '0.2.93', 'x-grok-client-identifier': 'grok-shell',
                             'User-Agent': 'grok-cli/0.2.93', 'Content-Type': 'application/json'},
                    timeout=15)
-        _record_quota(email, r.headers)
+        # 403/429 等非 200 响应: 可能是节点风控/限流, 不覆盖额度 (保留旧值)
+        if r.status_code == 200:
+            _record_quota(email, r.headers)
+        else:
+            print(f"[quota] {email} 刷新额度: HTTP {r.status_code} (非200, 保留旧额度)", flush=True)
         print(f"[quota] {email} 刷新额度: HTTP {r.status_code}", flush=True)
     except Exception as e:
         print(f"[quota] {email} 刷新额度异常: {e}", flush=True)
@@ -722,7 +726,7 @@ def _quota_needs_refresh(email, max_age_seconds=900):
 
 def _record_quota(email, headers):
     """从 response headers 记录额度信息
-    如果没有 quota headers（如 429 响应），记录为额度耗尽 {remaining_tokens: 0, limit_tokens: 1000000}
+    如果没有 quota headers（如 429 响应），保留数据库旧值 (不误报为额度耗尽)
     """
     try:
         conn = get_conn()
@@ -731,9 +735,15 @@ def _record_quota(email, headers):
         remaining_req = headers.get('x-ratelimit-remaining-requests', '')
         limit_req = headers.get('x-ratelimit-limit-requests', '')
 
-        # 如果 headers 中没有 quota 信息（如 429 响应），标记为额度耗尽
+        # 如果 headers 中没有 quota 信息（如 429 响应），保留旧值, 不覆盖为 0
         if not remaining_tokens or not limit_tokens:
-            # 额度耗尽：remaining=0, limit=1000000（标准值）
+            old = conn.execute("SELECT quota FROM accounts WHERE email=?", (email,)).fetchone()
+            old_quota = json.loads(old[0]) if old and old[0] else {}
+            conn.close()
+            if old_quota:
+                _update_quota_cache(email)
+                return
+            # 无旧值时才用默认 (新账号无数据)
             quota_data = {
                 'remaining_tokens': 0,
                 'limit_tokens': 1000000,
@@ -747,14 +757,14 @@ def _record_quota(email, headers):
                 'remaining_requests': int(remaining_req) if remaining_req else None,
                 'limit_requests': int(limit_req) if limit_req else None,
             }
-
-        conn.execute("""
+        conn2 = get_conn()
+        conn2.execute("""
             UPDATE accounts
             SET quota=?
             WHERE email=?
         """, (json.dumps(quota_data), email))
-        conn.commit()
-        conn.close()
+        conn2.commit()
+        conn2.close()
         _update_quota_cache(email)
     except Exception:
         pass
@@ -954,12 +964,18 @@ def get_total_account_count():
     return n
 
 def _auto_fill_loop():
-    """后台监控: 可调度号≤5 时自动补号至可调度≥30
+    """后台监控: 可调度号≤5 时自动补号至可调度≥30 (需在设置页勾选启用)
     连续失败 5 个账号自动停止; 结果落盘 data/auto_fill_result.json 供前端展示
     """
     global _fill_running
     while True:
         try:
+            # 总开关: 未勾选启用则跳过 (持久化在 settings 表, 重启不丢)
+            if not auto_fill_enabled():
+                with _fill_lock:
+                    _fill_running = False
+                time.sleep(FILL_CHECK_INTERVAL)
+                continue
             with _fill_lock:
                 if _fill_running:
                     time.sleep(FILL_CHECK_INTERVAL)
@@ -1074,6 +1090,18 @@ def start_auto_fill():
     t.start()
     print("[auto-fill] 自动补号监控已启动 (可用号≤5时自动注册至30个)", flush=True)
 
+def auto_fill_enabled():
+    """自动补号总开关 (设置页勾选才启用, 持久化到 settings 表)"""
+    from services.settings_service import get_setting
+    return get_setting('auto_fill_enabled', '0') == '1'
+
+def auto_fill_set_enabled(enabled: bool):
+    """设置自动补号总开关"""
+    from services.settings_service import set_setting
+    set_setting('auto_fill_enabled', '1' if enabled else '0')
+    print(f"[auto-fill] 总开关 {'启用' if enabled else '关闭'}", flush=True)
+    return {'enabled': enabled}
+
 def auto_fill_status():
     """查询自动补号状态 (含最近一次补号结果)"""
     result = None
@@ -1085,7 +1113,7 @@ def auto_fill_status():
     except Exception:
         pass
     return {
-        'enabled': True,
+        'enabled': auto_fill_enabled(),
         'trigger_threshold': FILL_TRIGGER_THRESHOLD,
         'target_dispatchable': FILL_TARGET_DISPATCHABLE,
         'check_interval': FILL_CHECK_INTERVAL,

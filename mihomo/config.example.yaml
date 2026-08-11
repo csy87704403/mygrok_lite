@@ -1,0 +1,234 @@
+# Mihomo 配置 - mygrok_lite 平台专用 (自动生成, 幂等重建)
+# 出口: 8100+ 每个真实节点一个独立端口 (平台节点池直接使用)
+# 兜底: 8001 mixed / 8002 http -> REG_POOL round-robin 全池轮询
+
+mixed-port: 8001
+port: 8002
+socks-port: 8003
+allow-lan: true
+bind-address: "*"
+mode: rule
+log-level: info
+ipv6: false
+external-controller: 0.0.0.0:9090
+secret: "change-me-mihomo-secret"
+
+# 节点来源
+proxy-providers:
+  my_sub:
+    type: http
+    url: "https://your-subscribe-provider.com/api/v1/client/subscribe?token=YOUR_SUBSCRIBE_TOKEN"
+    path: ./providers/my_sub.yaml
+    interval: 3600
+    health-check:
+      enable: true
+      url: https://www.gstatic.com/generate_204
+      interval: 300
+      lazy: true
+  local_nodes:
+    type: file
+    path: ./providers/local.yaml
+    health-check:
+      enable: true
+      url: https://www.gstatic.com/generate_204
+      interval: 300
+      lazy: true
+
+proxy-groups:
+  # 全池轮询兜底
+  - name: REG_POOL
+    type: load-balance
+    use:
+      - my_sub
+      - local_nodes
+    url: https://www.gstatic.com/generate_204
+    interval: 120
+    lazy: false
+    strategy: round-robin
+
+  - name: FALLBACK
+    type: select
+    proxies:
+      - REG_POOL
+      - DIRECT
+
+  # === 单节点固定出口 (自动生成) ===
+  - name: NODE_8100
+    type: select
+    use:
+      - my_sub
+      - local_nodes
+    filter: '(?i)🇺🇸美国专线01' 
+  - name: NODE_8101
+    type: select
+    use:
+      - my_sub
+      - local_nodes
+    filter: '(?i)🇺🇸美国专线02' 
+  - name: NODE_8102
+    type: select
+    use:
+      - my_sub
+      - local_nodes
+    filter: '(?i)🇦🇺澳大利亚专线01' 
+  - name: NODE_8103
+    type: select
+    use:
+      - my_sub
+      - local_nodes
+    filter: '(?i)🇦🇺澳大利亚专线02' 
+  - name: NODE_8104
+    type: select
+    use:
+      - my_sub
+      - local_nodes
+    filter: '(?i)🇮🇳印度专线01' 
+  - name: NODE_8105
+    type: select
+    use:
+      - my_sub
+      - local_nodes
+    filter: '(?i)🇮🇳印度专线02' 
+  - name: NODE_8106
+    type: select
+    use:
+      - my_sub
+      - local_nodes
+    filter: '(?i)🇧🇷巴西专线01' 
+  - name: NODE_8107
+    type: select
+    use:
+      - my_sub
+      - local_nodes
+    filter: '(?i)🇧🇷巴西专线02' 
+  - name: NODE_8108
+    type: select
+    use:
+      - my_sub
+      - local_nodes
+    filter: '(?i)🇺🇸美国高速01' 
+  - name: NODE_8109
+    type: select
+    use:
+      - my_sub
+      - local_nodes
+    filter: '(?i)🇺🇸美国高速02' 
+  - name: NODE_8110
+    type: select
+    use:
+      - my_sub
+      - local_nodes
+    filter: '(?i)🇮🇳印度高速01' 
+  - name: NODE_8111
+    type: select
+    use:
+      - my_sub
+      - local_nodes
+    filter: '(?i)🇦🇺澳大利亚高速01' 
+  - name: NODE_8112
+    type: select
+    use:
+      - my_sub
+      - local_nodes
+    filter: '(?i)🇦🇺澳大利亚高速02' 
+  - name: NODE_8113
+    type: select
+    use:
+      - my_sub
+      - local_nodes
+    filter: '(?i)🇫🇷法国高速01' 
+listeners:
+  # === 每节点独立端口 (自动生成) ===
+  - name: L8100
+    type: mixed
+    port: 8100
+    listen: 0.0.0.0
+    proxy: NODE_8100
+  - name: L8101
+    type: mixed
+    port: 8101
+    listen: 0.0.0.0
+    proxy: NODE_8101
+  - name: L8102
+    type: mixed
+    port: 8102
+    listen: 0.0.0.0
+    proxy: NODE_8102
+  - name: L8103
+    type: mixed
+    port: 8103
+    listen: 0.0.0.0
+    proxy: NODE_8103
+  - name: L8104
+    type: mixed
+    port: 8104
+    listen: 0.0.0.0
+    proxy: NODE_8104
+  - name: L8105
+    type: mixed
+    port: 8105
+    listen: 0.0.0.0
+    proxy: NODE_8105
+  - name: L8106
+    type: mixed
+    port: 8106
+    listen: 0.0.0.0
+    proxy: NODE_8106
+  - name: L8107
+    type: mixed
+    port: 8107
+    listen: 0.0.0.0
+    proxy: NODE_8107
+  - name: L8108
+    type: mixed
+    port: 8108
+    listen: 0.0.0.0
+    proxy: NODE_8108
+  - name: L8109
+    type: mixed
+    port: 8109
+    listen: 0.0.0.0
+    proxy: NODE_8109
+  - name: L8110
+    type: mixed
+    port: 8110
+    listen: 0.0.0.0
+    proxy: NODE_8110
+  - name: L8111
+    type: mixed
+    port: 8111
+    listen: 0.0.0.0
+    proxy: NODE_8111
+  - name: L8112
+    type: mixed
+    port: 8112
+    listen: 0.0.0.0
+    proxy: NODE_8112
+  - name: L8113
+    type: mixed
+    port: 8113
+    listen: 0.0.0.0
+    proxy: NODE_8113
+
+rules:
+  # 订阅/节点域名直连 (拉取节点不能被 REJECT)
+  - DOMAIN-SUFFIX,your-subscribe-provider.com,DIRECT
+  - DOMAIN-SUFFIX,your-node-provider.info,DIRECT
+  - DOMAIN-SUFFIX,xn--mirrors-oj8km52txc7d.com,DIRECT
+  - DOMAIN-SUFFIX,x.ai,REG_POOL
+  - DOMAIN-SUFFIX,grok.com,REG_POOL
+  - DOMAIN-SUFFIX,grokusercontent.com,REG_POOL
+  - DOMAIN-SUFFIX,grokipedia.com,REG_POOL
+  - DOMAIN-SUFFIX,auth.x.ai,REG_POOL
+  - DOMAIN-KEYWORD,turnstile,REG_POOL
+  - DOMAIN-SUFFIX,cloudflare.com,REG_POOL
+  - DOMAIN-SUFFIX,cloudflareinsights.com,REG_POOL
+  - DOMAIN-SUFFIX,challenges.cloudflare.com,REG_POOL
+  - DOMAIN-SUFFIX,215.im,REG_POOL
+  - DOMAIN-SUFFIX,chatgpt.org.uk,REG_POOL
+  - DOMAIN-SUFFIX,tempmail.lol,REG_POOL
+  - DOMAIN-SUFFIX,770440.xyz,REG_POOL
+  - DOMAIN-SUFFIX,770770.xyz,REG_POOL
+  - DOMAIN-SUFFIX,icodetensor.com,REG_POOL
+  - DOMAIN-SUFFIX,airfryersbg.com,REG_POOL
+  - MATCH,REJECT

@@ -23,5 +23,16 @@ grok_accounts/
 static/*.20[0-9][0-9][0-9][0-9][0-9][0-9]*.js
 static/*.20[0-9][0-9][0-9][0-9][0-9][0-9]*.css
 
+# Mihomo 节点配置 (含订阅 token / 节点密码, 仅保留脱敏示例)
+mihomo/config.yaml
+mihomo/providers/my_sub.yaml
+mihomo/providers/local.yaml
+mihomo/cache.db
+mihomo/*.py
+
+# 本机启动脚本
+start.bat
+stop.bat
+
 # OS
 .DS_Store

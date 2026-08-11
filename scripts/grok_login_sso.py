@@ -14,7 +14,15 @@ PORT = sys.argv[4] if len(sys.argv) > 4 else "8078"
 SEED = int(sys.argv[5]) if len(sys.argv) > 5 else 12345
 TZ = sys.argv[6] if len(sys.argv) > 6 else "America/New_York"
 
-browser = launch(headless=False, proxy={"server": f"http://127.0.0.1:{PORT}"},
+# 代理地址: 兼容纯端口 (8078 -> 127.0.0.1:8078) 和 host:port (mihomo:8108 -> http://mihomo:8108)
+if '://' in str(PORT):
+    proxy_server = PORT
+elif ':' in str(PORT):
+    proxy_server = f"http://{PORT}"
+else:
+    proxy_server = f"http://127.0.0.1:{PORT}"
+
+browser = launch(headless=False, proxy={"server": proxy_server},
                  timezone=TZ, locale="en-US",
                  args=[
                      '--fingerprint-platform=macos',

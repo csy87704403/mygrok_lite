@@ -360,39 +360,54 @@ def find_cpa_file(email):
 # ============ 额度查询 ============
 
 def get_quota(email):
-    """查询账号额度 (真实探测)"""
+    """查询账号额度 (真实探测, 并行加速)"""
     import curl_cffi.requests as cffi
+    from concurrent.futures import ThreadPoolExecutor, as_completed
     acc = get_account(email)
     if not acc:
         return {'error': 'account not found'}
-    
+
     at = acc.get('access_token', '')
-    node = acc.get('node_port', '') or '8078'
-    
-    # 尝试探测额度 API
+    node = acc.get('node_port', '') or 'mihomo:8001'
+
+    # 尝试探测额度 API (优先用账号自身节点, 失败再试其他活跃节点)
     endpoints = [
         'https://api.x.ai/v1/user/quota',
         'https://cli-chat-proxy.grok.com/v1/quota',
     ]
-    ports = [node] + ['8078','8081','8082','8083','8084','8085','8086','8087','8089','8090','8091','8092']
-    for endpoint in endpoints:
-        for port in ports:
-            try:
-                s = cffi.Session(impersonate='chrome131')
-                p_url, _ = get_node_proxy(str(port))
-                s.proxies = {'http': p_url, 'https': p_url}
-                r = s.get(endpoint,
-                         headers={'Authorization': f'Bearer {at}', 'x-xai-token-auth': 'xai-grok-cli'},
-                         timeout=15)
-                if r.status_code == 200:
-                    quota = r.json()
+    from services.registration_service import get_active_nodes
+    extra_ports = get_active_nodes() or ['mihomo:8001', 'mihomo:8002']
+    ports = [node] + extra_ports
+
+    def probe(endpoint, port):
+        try:
+            s = cffi.Session(impersonate='chrome131')
+            p_url, _ = get_node_proxy(str(port))
+            s.proxies = {'http': p_url, 'https': p_url}
+            r = s.get(endpoint,
+                      headers={'Authorization': f'Bearer {at}', 'x-xai-token-auth': 'xai-grok-cli'},
+                      timeout=6)
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            pass
+        return None
+
+    # 并行探测所有 (endpoint, port) 组合, 首个 200 即返回; 整体限时 15s
+    combos = [(ep, p) for ep in endpoints for p in ports]
+    try:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futures = {ex.submit(probe, ep, p): (ep, p) for ep, p in combos}
+            for fut in as_completed(futures, timeout=15):
+                quota = fut.result()
+                if quota:
                     conn = get_conn()
                     conn.execute("UPDATE accounts SET quota=? WHERE email=?", (json.dumps(quota), email))
                     conn.commit()
                     conn.close()
                     return {'email': email, 'quota': quota}
-            except Exception:
-                continue
+    except Exception:
+        pass
     return {'email': email, 'quota': 'unknown', 'note': '免费账号常无额度API, 参考 /models 200 即可用'}
 
 

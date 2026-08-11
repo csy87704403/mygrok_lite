@@ -115,16 +115,16 @@ async def get_account(email: str):
     return acc
 
 @app.post("/api/accounts/import")
-async def import_accounts():
+def import_accounts():
     imported, errors = account_service.import_all_cpa()
     return {'imported': imported, 'errors': errors}
 
 @app.post("/api/accounts/{email}/check")
-async def check_account(email: str):
+def check_account(email: str):
     return account_service.check_account_status(email)
 
 @app.post("/api/accounts/{email}/refresh")
-async def refresh_account(email: str):
+def refresh_account(email: str):
     """续期: 只用 RT 刷新 AT (不降级登录)"""
     return account_service.refresh_with_rt_only(email)
 
@@ -138,7 +138,7 @@ async def relogin_status(task_id: str):
     return account_service.relogin_status(task_id)
 
 @app.post("/api/accounts/check-all")
-async def check_all():
+def check_all():
     return account_service.check_all_sync()
 
 @app.get("/api/accounts/check-all/{task_id}")
@@ -146,7 +146,7 @@ async def check_all_result(task_id: str):
     return account_service.get_check_all_result(task_id)
 
 @app.post("/api/accounts/refresh-all")
-async def refresh_all():
+def refresh_all():
     """一键批量续期所有失活账号 (仅RT刷新)"""
     return account_service.refresh_all_inactive()
 
@@ -159,7 +159,8 @@ async def delete_account(email: str):
     return account_service.delete_account(email)
 
 @app.post("/api/accounts/{email}/quota")
-async def get_quota(email: str):
+def get_quota(email: str):
+    # 同步 def: get_quota 是阻塞探测, 放线程池执行避免卡死事件循环
     return account_service.get_quota(email)
 
 # ============ 注册 API ============
@@ -180,7 +181,7 @@ async def add_nodes_batch(body: dict):
     return registration_service.add_nodes_batch(text, default_proxy_type)
 
 @app.post("/api/nodes/check")
-async def check_nodes(body: dict):
+def check_nodes(body: dict):
     """检测输入框中的节点到 Grok 的连通性: {text, default_proxy_type}"""
     text = body.get('text', '')
     default_proxy_type = body.get('default_proxy_type', 'http')
@@ -297,6 +298,11 @@ async def import_cpa():
 async def auto_fill_status():
     """自动补号监控状态 (可用号≤5时自动注册至30个)"""
     return api_service.auto_fill_status()
+
+@app.post("/api/auto-fill/set-enabled")
+async def auto_fill_set_enabled(body: dict):
+    """设置自动补号总开关: {enabled: true/false}"""
+    return api_service.auto_fill_set_enabled(bool(body.get('enabled', False)))
 
 @app.get("/api/auto-refresh/status")
 async def auto_refresh_status():

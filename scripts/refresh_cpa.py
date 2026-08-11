@@ -38,10 +38,19 @@ def extract_sso(page):
         print(f"  CDP读SSO异常: {e}", flush=True)
     return ''
 
+def _proxy_url(port):
+    """兼容纯端口 (8078 -> http://127.0.0.1:8078) 和 host:port (mihomo:8108 -> http://mihomo:8108)"""
+    if '://' in str(port):
+        return port
+    if ':' in str(port):
+        return f'http://{port}'
+    return f'http://127.0.0.1:{port}'
+
 def run_sso2cpa(sso, email, port):
     """调用 sso2cpa 模块进行 SSO->CPA 转换"""
     s = cffi.Session(impersonate='chrome131')
-    s.proxies = {'http': f'http://127.0.0.1:{port}', 'https': f'http://127.0.0.1:{port}'}
+    p_url = _proxy_url(port)
+    s.proxies = {'http': p_url, 'https': p_url}
     s.headers.update({'user-agent': sso2cpa.UA, 'accept': '*/*',
                       'origin': 'https://accounts.x.ai', 'referer': 'https://accounts.x.ai/'})
     dev_ep, tok_ep, auth_ep = sso2cpa.discover(s)
@@ -62,7 +71,7 @@ def main():
         sys.exit(1)
 
     path = sys.argv[1]
-    default_port = sys.argv[2] if len(sys.argv) > 2 else '8078'
+    default_port = sys.argv[2] if len(sys.argv) > 2 else 'mihomo:8001'
 
     with open(path) as f:
         doc = json.load(f)
@@ -79,7 +88,7 @@ def main():
 
     # 尝试多个节点
     ports_to_try = [default_port]
-    extra_ports = ["8047","8063","8037","8011","8020","8050","8074","8081","8090","8040","8023","8078"]
+    extra_ports = ["mihomo:8002"]
     for p in extra_ports:
         if p not in ports_to_try:
             ports_to_try.append(p)
@@ -89,7 +98,7 @@ def main():
         print(f"\n--- 尝试节点 {port} (第{attempt+1}次) ---", flush=True)
 
         browser = launch(headless=False,
-                        proxy={'server': f'http://127.0.0.1:{port}'},
+                        proxy={'server': _proxy_url(port)},
                         timezone=tz, locale='en-US',
                         args=[f'--fingerprint-platform={platform}',
                               f'--fingerprint={seed}',

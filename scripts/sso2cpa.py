@@ -251,6 +251,12 @@ def main():
         sys.exit(1)
     sso = sys.argv[1].strip()
     email = sys.argv[2] if len(sys.argv) > 2 else ''
+    # 代理: 默认 mihomo:8001 (容器内 mihomo 容器名), 可传第3参覆盖
+    _proxy = sys.argv[3] if len(sys.argv) > 3 else 'mihomo:8001'
+    if '://' not in _proxy and ':' in _proxy:
+        _proxy = f'http://{_proxy}'
+    elif '://' not in _proxy:
+        _proxy = f'http://127.0.0.1:{_proxy}'
     
     print(f"=== SSO → OAuth → CPA ===")
     print(f"SSO len: {len(sso)}, email: {email or '(from JWT)'}")
@@ -261,7 +267,7 @@ def main():
     
     # 初始化 session
     s = cffi_requests.Session(impersonate='chrome131')
-    s.proxies = {'http': 'http://127.0.0.1:8078', 'https': 'http://127.0.0.1:8078'}
+    s.proxies = {'http': _proxy, 'https': _proxy}
     s.headers.update({
         'user-agent': UA,
         'accept': '*/*',
