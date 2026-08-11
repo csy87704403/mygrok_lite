@@ -28,7 +28,6 @@ mihomo/config.yaml
 mihomo/providers/my_sub.yaml
 mihomo/providers/local.yaml
 mihomo/cache.db
-mihomo/*.py
 
 # 本机启动脚本
 start.bat
