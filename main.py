@@ -372,13 +372,29 @@ def _resolve_base_url():
     return f'http://{ip}:{config.API_PORT}/v1' if ip else '', 'direct'
 
 @app.get("/api/base-url")
-async def base_url_info():
+async def base_url_info(request: Request):
     """返回平台 API 的完整 Base URL.
     部署了隧道(公网IP+隧道) → 显示隧道域名; 只有公网IP → 显示公网IP.
+    本机/内网访问(127.x / 192.168.x / 10.x / 172.16-31.x) → 锁定 127.0.0.1 (避免显示代理出口 IP)
     """
+    # 根据访问来源判断 (容器内 mihomo 代理会让 get_public_ip() 返回代理出口 IP, 误显示)
+    client_ip = (request.client.host if request.client else '') or ''
+    is_local = (
+        client_ip in ('127.0.0.1', '::1', 'localhost', '')
+        or client_ip.startswith('192.168.')
+        or client_ip.startswith('10.')
+        or (client_ip.startswith('172.') and 16 <= int(client_ip.split('.')[1] if client_ip.count('.') >= 2 else 0) <= 31)
+    )
     ip = get_public_ip()
-    base_url, mode = _resolve_base_url()
     tunnel_url = os.environ.get('GROK_PUBLIC_BASE_URL', '').strip()
+    if tunnel_url:
+        base_url, mode = tunnel_url, 'forced'
+    elif is_local:
+        # 本机/内网访问: 锁定 localhost, 不查公网 IP (防代理出口 IP 误显示)
+        base_url, mode = f'http://127.0.0.1:{config.API_PORT}/v1', 'local'
+    else:
+        base_url = f'http://{ip}:{config.API_PORT}/v1' if ip else f'http://127.0.0.1:{config.API_PORT}/v1'
+        mode = 'direct' if ip else 'local'
     direct_url = f'http://{ip}:{config.API_PORT}/v1' if ip else ''
     return {
         'public_ip': ip,
@@ -386,7 +402,8 @@ async def base_url_info():
         'urls': list(dict.fromkeys([base_url, tunnel_url, direct_url])),
         'port': config.API_PORT,
         'access_mode': mode,
-        'note': '外网走自定义域名(GROK_PUBLIC_BASE_URL)' if tunnel_url else '使用公网IP直连',
+        'note': '外网走自定义域名(GROK_PUBLIC_BASE_URL)' if tunnel_url
+                else ('本机/内网访问, Base URL 锁定 localhost' if mode == 'local' else '使用公网IP直连'),
     }
 
 # ============ OpenAI 兼容 API ============

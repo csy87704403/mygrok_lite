@@ -144,9 +144,8 @@ refresh.accounts = async function() {
     if (isExpired) {
       actions += `<button class="ghost" onclick="reloginAcc('${esc(a.email)}', this)" ${reloginDisabled}>重登</button> `;
     }
-    if (isExpired && isReloginFailed) {
-      actions += `<button class="ghost" style="color:#dc2626" onclick="deleteAcc('${esc(a.email)}')">删除</button> `;
-    }
+    // 删除按钮常驻: 所有状态都可删除账号
+    actions += `<button class="ghost" style="color:#dc2626" onclick="deleteAcc('${esc(a.email)}')">删除</button> `;
     actions += `<button class="ghost" onclick="checkAcc('${esc(a.email)}')">测活</button>`;
     actions += ` <button class="ghost" onclick="quotaAcc('${esc(a.email)}')">额度</button>`;
 
