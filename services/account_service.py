@@ -123,7 +123,7 @@ def check_account_status(email):
         # 修复: 之前直接返回 expired, 账号不会自动恢复
         try:
             rt = acc.get('refresh_token', '')
-            node = acc.get('node_port', '8078') or '8078'
+            node = acc.get('node_port', 'mihomo:8001') or 'mihomo:8001'
             if rt:
                 rr = refresh_with_rt(email, rt, node)
                 if rr.get('ok'):
@@ -149,9 +149,12 @@ def probe_models(email):
         return {'status': 'error', 'reason': 'account not found'}
     
     at = acc.get('access_token', '')
-    node = acc.get('node_port', '8078') or '8078'
-    
-    ports = [node] + ['8078','8081','8082','8083','8084','8085','8086','8087','8089','8090','8091','8092']
+    node = acc.get('node_port', 'mihomo:8001') or 'mihomo:8001'
+
+    # 优先用账号自身节点, 再遍历活跃节点池 (替代硬编码死端口列表)
+    from services.registration_service import get_active_nodes
+    extra_ports = get_active_nodes() or ['mihomo:8001', 'mihomo:8002']
+    ports = [node] + extra_ports
     for port in ports:
         try:
             s = cffi.Session(impersonate='chrome131')
@@ -236,7 +239,8 @@ def refresh_with_rt(email, rt, node):
         from services.api_service import _get_usable_nodes, _get_node_speed_score
         ports = sorted(_get_usable_nodes(), key=lambda p: _get_node_speed_score(p))
     except Exception:
-        ports = [str(node)] + ['8078','8081','8082','8083','8084','8085','8086','8087','8089','8090','8091','8092']
+        from services.registration_service import get_active_nodes
+        ports = get_active_nodes() or ['mihomo:8001', 'mihomo:8002']
     ports = list(dict.fromkeys([str(p) for p in ports if str(p)]))[:8]
     for port in ports:
         try:
@@ -708,7 +712,10 @@ def _sso_to_oauth(sso, doc):
         spec.loader.exec_module(sso2cpa)
 
         s = cffi.Session(impersonate='chrome131')
-        p_url, _ = get_node_proxy('8078')
+        # SSO 转换: 用账号自身节点, 无则用活跃节点池兜底
+        _acc = get_account(doc.get('email', ''))
+        _node = (_acc or {}).get('node_port') or 'mihomo:8001'
+        p_url, _ = get_node_proxy(str(_node))
         s.proxies = {'http': p_url, 'https': p_url}
         s.headers.update({
             'user-agent': sso2cpa.UA,
@@ -771,11 +778,12 @@ def _get_alternate_node(email):
         from services.api_service import _get_usable_nodes, _get_node_speed_score
         candidates = sorted(_get_usable_nodes(), key=lambda p: _get_node_speed_score(p))
     except Exception:
-        candidates = ['8078','8081','8082','8083','8084','8085','8086','8087','8089','8090','8091','8092']
+        from services.registration_service import get_active_nodes
+        candidates = get_active_nodes() or ['mihomo:8001', 'mihomo:8002']
     for n in candidates:
         if str(n) != current:
             return str(n)
-    return candidates[0] if candidates else '8078'
+    return candidates[0] if candidates else 'mihomo:8001'
 
 
 def _switch_cpa_node(cpa_file, new_port):

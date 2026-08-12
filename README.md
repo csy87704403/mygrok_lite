@@ -32,7 +32,7 @@ Docker 化部署，支持 **Linux 服务器** 与 **Windows (Docker Desktop / WS
 | 网络 | `host`（直连宿主机 Mihomo） | `bridge` + mihomo 容器同网络 |
 | 节点地址 | `127.0.0.1:8001-8092` | `mihomo:8001/8002` + 8100+ 真实节点 |
 | 数据卷 | `./data`、`./grok_accounts` 目录 | named volumes (WSL2 ext4) |
-| compose 文件 | `docker-compose.yml` | 加 `-f docker-compose.docker-desktop.yml` |
+| compose 文件 | `docker-compose.yml` | `docker-compose.docker-desktop.yml` (独立文件) |
 
 ---
 
@@ -60,7 +60,7 @@ docker compose up -d --build
 ```bash
 cp .env.example .env
 # .env 里设置 GROK_DEFAULT_NODES=mihomo:8001,mihomo:8002
-docker compose -f docker-compose.yml -f docker-compose.docker-desktop.yml up -d --build
+docker compose -f docker-compose.docker-desktop.yml up -d --build
 ```
 
 ### 访问
@@ -126,7 +126,7 @@ mihomo/
 
 ```bash
 python mihomo/rebuild_config.py   # 幂等重建 config.yaml (自动分配 8100+ 端口)
-docker compose -f docker-compose.yml -f docker-compose.docker-desktop.yml restart mihomo
+docker compose -f docker-compose.docker-desktop.yml restart mihomo
 ```
 
 ---
@@ -162,7 +162,7 @@ docker compose -f docker-compose.yml -f docker-compose.docker-desktop.yml restar
 
 ### 1. 双环境部署支持
 - `docker-compose.yml` 保持原版 host 网络（Linux 直接用）
-- 新增 `docker-compose.docker-desktop.yml` override（bridge + mihomo 容器 + named volumes）
+- 新增 `docker-compose.docker-desktop.yml` 独立文件（bridge + mihomo 容器 + named volumes）
 - `db.py` 节点池改为 `GROK_DEFAULT_NODES` 环境变量控制
 
 ### 2. 每真实节点独立出口 (新功能)
@@ -209,7 +209,7 @@ A: Docker Desktop 冷启动需 1-2 分钟，耐心等待；超过 3 分钟说明
 A: 设置 `GROK_PUBLIC_BASE_URL` 指向你的域名/隧道。
 
 **Q: 改了代码不生效？**
-A: 需要重新构建镜像: `docker compose build && docker compose up -d`（或 Docker Desktop 版加 `-f docker-compose.docker-desktop.yml`）。
+A: 需要重新构建镜像: `docker compose build && docker compose up -d`（或 Docker Desktop 版: `docker compose -f docker-compose.docker-desktop.yml up -d --build`）。
 
 ---
 
