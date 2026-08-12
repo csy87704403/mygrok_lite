@@ -77,7 +77,8 @@ def main():
         doc = json.load(f)
 
     email = doc.get('email', '')
-    password = doc.get('password', 'Kx9!vR7mP2qL8sT4wZ6aB1nC5')
+    # 优先读 CPA 内密码; 无则用随机 (不再用固定默认值)
+    password = doc.get('password') or ''.join(random.choices('ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*', k=16))
     ctx = doc.get('registration_context', {})
     seed = ctx.get('fingerprint_seed', random.randint(10000, 99999))
     tz = ctx.get('timezone', 'America/New_York')

@@ -139,7 +139,8 @@ def main():
             print('❌ 所有域名建临时邮箱失败, 本轮放弃', flush=True)
             time.sleep(3)
             continue
-        password="Kx9!vR7mP2qL8sT4wZ6aB1nC5"
+        # 随机生成账号密码 (避免所有账号共用同一密码)
+        password = ''.join(random.choices('ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*', k=16))
         given, family = random_name()
         print(f"1. 邮箱:{email} 节点:{port} seed:{seed} tz:{tz} 名字:{given} {family} (try {attempt}/{max_tries})", flush=True)
 
