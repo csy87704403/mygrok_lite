@@ -436,9 +436,31 @@ def v1_chat(body: dict, request: Request, auth: HTTPAuthorizationCredentials = D
         model = err.get('model', body.get('model', ''))
         key = err.get('api_key', api_key)
         def stream_wrapper():
+            yielded_any = False
             try:
                 for chunk in stream_data:
+                    yielded_any = True
                     yield chunk
+            except Exception as e:
+                # 流式中途断连 (上游连接关闭等)
+                print(f"[stream] {account_email} 流中断连: {e}", flush=True)
+                if not yielded_any:
+                    # 开局即断 (客户端未收到任何内容): 自动换账号重试一次
+                    try:
+                        r2, e2 = api_service.chat_completion(body, api_key='***')
+                        if e2 and 'stream' in e2:
+                            print(f"[stream] {account_email} 断连后换账号重试成功", flush=True)
+                            for chunk2 in e2['stream']:
+                                yield chunk2
+                        elif e2:
+                            print(f"[stream] 重试失败: {e2.get('error', {}).get('message', '')[:80]}", flush=True)
+                    except Exception as e2:
+                        print(f"[stream] 重试异常: {e2}", flush=True)
+                # 优雅终止: 补发 [DONE] 防止客户端一直等待
+                try:
+                    yield b'data: [DONE]\n\n'
+                except Exception:
+                    pass
             finally:
                 # 流式完成后记录一次请求 (无 token 明细)
                 try:
