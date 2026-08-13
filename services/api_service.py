@@ -869,12 +869,12 @@ def _refresh_single_quota(email, node_port=None):
         if not acc or not acc.get('access_token'):
             return
         at = acc['access_token']
-        port = node_port or acc.get('node_port') or '8078'
+        port = node_port or acc.get('node_port') or 'mihomo:8001'
         p_url, _ = get_node_proxy(str(port))
         s = cffi.Session(impersonate='chrome131')
         s.proxies = {'http': p_url, 'https': p_url}
         r = s.post('https://cli-chat-proxy.grok.com/v1/chat/completions',
-                   json={'model': 'grok-4.5', 'messages': [{'role': 'user', 'content': 'ping'}]},
+                   json={'model': 'grok-4.6', 'messages': [{'role': 'user', 'content': 'ping'}]},
                    headers={'Authorization': f'Bearer {at}', 'X-XAI-Token-Auth': 'xai-grok-cli',
                             'x-grok-client-version': '0.2.93', 'x-grok-client-identifier': 'grok-shell',
                             'User-Agent': 'grok-cli/0.2.93', 'Content-Type': 'application/json'},

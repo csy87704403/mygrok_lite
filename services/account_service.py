@@ -54,9 +54,26 @@ def import_cpa_file(filepath):
         conn.commit()
         conn.close()
         # 新导入账号: 立即后台刷新一次额度 (CPA文件无quota字段, 不刷新则前端显示"可用")
+        # 延迟5秒: 等账号刚建好稳定, 避免立刻探测撞上游初始化; 锁满也重试一次
         try:
             from services.api_service import _refresh_single_quota
-            threading.Thread(target=_refresh_single_quota, args=(email,), daemon=True).start()
+            import time as _t
+            def _delayed_quota():
+                _t.sleep(5)
+                _refresh_single_quota(email)
+                # 若首次失败(锁满/非200)再补一次
+                _t.sleep(8)
+                try:
+                    from db import get_conn as _gc
+                    _c = _gc()
+                    row = _c.execute("SELECT quota FROM accounts WHERE email=?", (email,)).fetchone()
+                    _c.close()
+                    old = json.loads(row[0]) if row and row[0] else {}
+                    if not old.get('remaining_tokens'):
+                        _refresh_single_quota(email)
+                except Exception:
+                    pass
+            threading.Thread(target=_delayed_quota, daemon=True).start()
         except Exception:
             pass
         return email, None
