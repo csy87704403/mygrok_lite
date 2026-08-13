@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>螳螂骑自行车</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #f0f0f0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            font-family: system-ui, sans-serif;
+        }
+        .container {
+            text-align: center;
+        }
+        svg {
+            max-width: 100%;
+            height: auto;
+            border: 3px solid #222;
+            border-radius: 12px;
+            background: #fff;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+        .wheel {
+            animation: spin 1.3s linear infinite;
+        }
+        @keyframes pedal {
+            0% { transform: rotate(0deg); }
+            50% { transform: rotate(95deg); }
+            100% { transform: rotate(0deg); }
+        }
+        .left-leg {
+            animation: pedal 2s linear infinite;
+        }
+        @keyframes pedal-reverse {
+            0% { transform: rotate(0deg); }
+            50% { transform: rotate(-95deg); }
+            100% { transform: rotate(0deg); }
+        }
+        .right-leg {
+            animation: pedal-reverse 2s linear infinite;
+            animation-delay: 1s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <svg width="800" height="600" viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+                <!-- 天空渐变 -->
+                <linearGradient id="sky" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" stop-color="#87CEEB"/>
+                    <stop offset="100%" stop-color="#E0F7FA"/>
+                </linearGradient>
+                <!-- 草地渐变 -->
+                <linearGradient id="grass" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" stop-color="#228B22"/>
+                    <stop offset="100%" stop-color="#1E7D1E"/>
+                </linearGradient>
+            </defs>
+
+            <!-- 天空 -->
+            <rect x="0" y="0" width="800" height="380" fill="url(#sky)"/>
+
+            <!-- 草地 -->
+            <rect x="0" y="380" width="800" height="220" fill="url(#grass)"/>
+
+            <!-- 自行车主体 -->
+            <g>
+                <!-- 车架主干 -->
+                <line x1="170" y1="355" x2="630" y2="355" stroke="#3A2F1F" stroke-width="22" stroke-linecap="round"/>
+                <!-- 座管 -->
+                <line x1="630" y1="355" x2="615" y2="305" stroke="#3A2F1F" stroke-width="14" stroke-linecap="round"/>
+                <!-- 座椅 -->
+                <rect x="565" y="285" width="95" height="45" fill="#4A4A4A" rx="6"/>
+                <!-- 手把 -->
+                <g transform="translate(185, 305)">
+                    <line x1="0" y1="0" x2="-125" y2="-35" stroke="#222" stroke-width="16" stroke-linecap="round"/>
+                    <line x1="0" y1="0" x2="125" y2="-35" stroke="#222" stroke-width="16" stroke-linecap="round"/>
+                    <!-- 手把握把 -->
+                    <ellipse cx="-125" cy="-35" rx="28" ry="9" fill="#111"/>
+                    <ellipse cx="125" cy="-35" rx="28" ry="9" fill="#111"/>
+                </g>
+            </g>
+
+            <!-- 车轮 -->
+            <g>
+                <!-- 后轮 -->
+                <g class="wheel">
+                    <circle cx="290" cy="355" r="58" fill="#f8f8f8" stroke="#222" stroke-width="11"/>
+                    <!-- 轮胎 -->
+                    <circle cx="290" cy="355" r="60" fill="none" stroke="#222" stroke-width="14"/>
+                    <!-- 轮毂 -->
+                    <circle cx="290" cy="355" r="19" fill="#222"/>
+                </g>
+                <!-- 前轮 -->
+                <g class="wheel">
+                    <circle cx="660" cy="355" r="58" fill="#f8f8f8" stroke="#222" stroke-width="11"/>
+                    <!-- 轮胎 -->
+                    <circle cx="660" cy="355" r="60" fill="none" stroke="#222" stroke-width="14"/>
+                    <!-- 轮毂 -->
+                    <circle cx="660" cy="355" r="19" fill="#222"/>
+                </g>
+            </g>
+
+            <!-- 螳螂 -->
+            <g>
+                <!-- 身体（分节效果） -->
+                <rect x="425" y="255" width="145" height="70" rx="18" fill="#0A4A0A" stroke="#0A4A0A" stroke-width="5"/>
+                <!-- 头部 -->
+                <ellipse cx="530" cy="205" rx="50" ry="40" fill="#0A4A0A" stroke="#0A4A0A" stroke-width="5"/>
+                <!-- 大眼睛（绿色） -->
+                <ellipse cx="490" cy="192" rx="15" ry="22" fill="#00FF99" stroke="#00FF99"/>
+                <ellipse cx="570" cy="192" rx="15" ry="22" fill="#00FF99" stroke="#00FF99"/>
+                <!-- 眼睛瞳孔 -->
+                <ellipse cx="485" cy="188" rx="6" ry="10" fill="#003322"/>
+                <ellipse cx="565" cy="188" rx="6" ry="10" fill="#003322"/>
+                
+                <!-- 镰刀前肢（绿色大眼睛前肢） -->
+                <path d="M 455 252 Q 485 218 535 255" fill="none" stroke="#00FF99" stroke-width="11" stroke-linecap="round"/>
+                <path d="M 505 252 Q 470 218 535 255" fill="none" stroke="#00FF99" stroke-width="11" stroke-linecap="round"/>
+            </g>
+
+            <!-- 后腿（蹬踏动画） -->
+            <!-- 左腿 -->
+            <g class="left-leg">
+                <line x1="0" y1="0" x2="58" y2="88" stroke="#0A4A0A" stroke-width="14" stroke-linecap="round"/>
+            </g>
+            <!-- 右腿 -->
+            <g class="right-leg">
+                <line x1="0" y1="0" x2="48" y2="88" stroke="#0A4A0A" stroke-width="14" stroke-linecap="round"/>
+            </g>
+        </svg>
+        <p style="margin-top:25px; font-size:22px; color:#222; font-weight:600;">螳螂骑自行车 • SVG动画</p>
+    </div>
+</body>
+</html>

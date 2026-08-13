@@ -26,27 +26,17 @@ def release_token_bucket():
 
 
 # ============ 连接池 (复用 Session) ============
-_session_pool = {}  # port -> (session, last_used_ts)
+_session_pool = {}  # port -> (session, last_used_ts)  (仅单线程内部优化用, 不再跨线程共享)
 _pool_lock = threading.Lock()
 _POOL_TTL = 300  # 5分钟过期
 
 def _get_session(port):
-    """获取或创建复用的 curl_cffi Session"""
-    now = time.time()
-    with _pool_lock:
-        if port in _session_pool:
-            s, ts = _session_pool[port]
-            if now - ts < _POOL_TTL:
-                _session_pool[port] = (s, now)
-                return s
-        from curl_cffi import requests as cffi
-        s = cffi.Session(impersonate='chrome131')
-        _session_pool[port] = (s, now)
-        # 清理过期 session
-        expired = [k for k, (_, t) in _session_pool.items() if now - t > _POOL_TTL]
-        for k in expired:
-            del _session_pool[k]
-    return s
+    """获取可用的 curl_cffi Session.
+    注意: curl_cffi.Session 非线程安全, 跨线程共享会导致并发请求互相污染 (假超时/502).
+    因此每次请求返回独立 Session, 由调用方负责 close. 不再复用池.
+    """
+    from curl_cffi import requests as cffi
+    return cffi.Session(impersonate='chrome131')
 
 # ============ 节点延迟缓存 ============
 _node_latency = {}  # port -> avg_latency_ms
@@ -418,10 +408,16 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
                     if _is_legit_sse:
                         # 合法 SSE 流: 原样透传 (把预读的 chunk 一起带上)
                         def _sse_pass():
-                            if _first:
-                                yield _first
-                            for c in it:
-                                yield c
+                            try:
+                                if _first:
+                                    yield _first
+                                for c in it:
+                                    yield c
+                            finally:
+                                try:
+                                    s.close()  # 流读完/断开都关闭 Session
+                                except Exception:
+                                    pass
                         return None, {'stream': _sse_pass(), 'status': r.status_code,
                                       'headers': dict(r.headers), 'account': account['email'], 'node': port,
                                       'api_key': api_key, 'model': model}
@@ -448,12 +444,22 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
                         }
                         _sse_bytes = f'data: {json.dumps(_chunk, ensure_ascii=False)}\n\n'.encode('utf-8')
                         def _sse_wrapped():
-                            yield _sse_bytes
-                            yield b'data: [DONE]\n\n'
+                            try:
+                                yield _sse_bytes
+                                yield b'data: [DONE]\n\n'
+                            finally:
+                                try:
+                                    s.close()
+                                except Exception:
+                                    pass
                         return None, {'stream': _sse_wrapped(), 'status': r2.status_code,
                                       'headers': dict(r2.headers), 'account': account['email'], 'node': port,
                                       'api_key': api_key, 'model': model}
                     # 降级也失败 → 换账号重试
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
                     return None
                 else:
                     data = r.json()
@@ -475,6 +481,10 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
                         _usage_cache['ts'] = 0
                     data['_account'] = account['email']
                     data['_node'] = port
+                    try:
+                        s.close()  # 独立 Session, 用完即关
+                    except Exception:
+                        pass
                     return data, None
             elif r.status_code in (401, 403):
                 # token 失效: 立即用 RT 尝试续期 (AT失效但RT通常有效)
@@ -489,7 +499,15 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
                             fresh = _ga(account['email'])
                             if fresh and fresh.get('access_token'):
                                 at = fresh['access_token']
+                                try:
+                                    s.close()
+                                except Exception:
+                                    pass
                                 continue  # 新AT试下一个节点
+                        except Exception:
+                            pass
+                        try:
+                            s.close()
                         except Exception:
                             pass
                         return None  # 无法续期AT, 换账号
@@ -514,9 +532,17 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
                                 print(f"[api] {account['email']} 降级重登未启动: {str(rd.get('msg'))[:80]}", flush=True)
                         except Exception as e:
                             print(f"[api] {account['email']} 降级重登异常: {e}", flush=True)
+                        try:
+                            s.close()
+                        except Exception:
+                            pass
                         return None
                 except Exception as e:
                     print(f"[api] {account['email']} 401处理异常: {e}", flush=True)
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
                     return None
             elif r.status_code == 429:
                 # 区分: 真额度耗尽 vs 临时限流
@@ -543,6 +569,10 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
                     # 临时限流: 不冷却, 标注一下(面板显示"限流中"), 换节点/账号继续
                     _mark_rate_limited(account['email'])
                     print(f"[api] {account['email']} 429临时限流(remaining={rem_tok or '未知'}), 标注限流, 换账号", flush=True)
+                try:
+                    s.close()
+                except Exception:
+                    pass
                 return None
             else:
                 # 其他错误 (5xx等): 试下一个节点
@@ -555,6 +585,10 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
                 print(f"[api] {account['email']} 节点{port} 超时(长生成?), 不标死, 试下一节点", flush=True)
             else:
                 _mark_dead(port)  # 连不上/连接错误 → 标记死节点
+            try:
+                s.close()
+            except Exception:
+                pass
             continue
     return None  # 该账号所有节点失败, 换账号
 
