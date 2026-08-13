@@ -445,11 +445,24 @@ def v1_chat(body: dict, request: Request, auth: HTTPAuthorizationCredentials = D
                 # 流式中途断连 (上游连接关闭等)
                 print(f"[stream] {account_email} 流中断连: {e}", flush=True)
                 if not yielded_any:
-                    # 开局即断 (客户端未收到任何内容): 自动换账号重试一次 (排除断连账号)
+                    # 开局即断 (客户端未收到任何内容): 降级为非流式重发 (排除断连账号)
+                    # 上游流式连接不稳定时, 非流式一次拿全量更可靠, 避免二次断连
                     try:
-                        r2, e2 = api_service.chat_completion(body, api_key='***', exclude_account=account_email)
-                        if e2 and 'stream' in e2:
-                            print(f"[stream] {account_email} 断连后换账号重试成功", flush=True)
+                        body_ns = dict(body)
+                        body_ns['stream'] = False
+                        r2, e2 = api_service.chat_completion(body_ns, api_key='***', exclude_account=account_email)
+                        if e2 is None and r2:
+                            # 非流式成功: 包装成 SSE 透传给客户端
+                            print(f"[stream] {account_email} 断连后非流式重试成功", flush=True)
+                            content = (r2.get('choices') or [{}])[0].get('message', {}).get('content', '')
+                            if content:
+                                chunk_obj = {'id': r2.get('id', 'chatcmpl-degrade'), 'object': 'chat.completion.chunk',
+                                             'created': int(time.time()), 'model': r2.get('model', 'grok-4.6'),
+                                             'choices': [{'index': 0, 'delta': {'content': content}, 'finish_reason': 'stop'}]}
+                                yield f'data: {json.dumps(chunk_obj, ensure_ascii=False)}\n\n'.encode('utf-8')
+                            yield b'data: [DONE]\n\n'
+                        elif e2 and 'stream' in e2:
+                            print(f"[stream] {account_email} 断连后重试仍流式成功", flush=True)
                             for chunk2 in e2['stream']:
                                 yield chunk2
                         elif e2:
