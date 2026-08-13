@@ -119,8 +119,11 @@ _quota_429_lock = threading.Lock()
 _quota_429_rate_limited = {}
 _quota_429_rl_lock = threading.Lock()
 
-def _mark_rate_limited(email, seconds=300):
-    """标注账号临时限流 (面板可见, 不参与冷却/调度跳过)"""
+def _mark_rate_limited(email, seconds=30):
+    """标注账号临时限流 (面板可见, 短时跳过调度).
+    注意: 上游 429 瞬时限流几秒即恢复, 标注 30s 足够避免立即重试撞枪口;
+    标注过长(如300s)会导致账号池全部被跳过时回退到限流账号, 反复撞429变慢.
+    """
     with _quota_429_rl_lock:
         _quota_429_rate_limited[email] = time.time() + seconds
 
@@ -425,6 +428,10 @@ def chat_completion(body, api_key=''):
                     return result
             finally:
                 _account_busy_release(account['email'])
+            # 短退避: 失败(429/节点)后等一小段时间再试下一账号, 让上游限流恢复
+            # 减少"连撞多个账号429"导致的整体等待感知
+            if _attempt < 2:
+                time.sleep(0.8)
         return None, {'error': {'message': '所有账号/节点请求失败', 'type': 'node_exhausted'}, 'code': 502}
     finally:
         release_token_bucket()
