@@ -38,3 +38,5 @@ stop.bat
 mihomo/providers/extra_nodes.yaml
 bounce_ball.html
 mantis_bike.html
+_install_grok.ps1
+firefly_grokcli.html
