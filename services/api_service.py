@@ -388,8 +388,9 @@ def _get_sorted_ports(node_list):
         _sorted_ports_cache['ts'] = now
     return ports
 
-def chat_completion(body, api_key=''):
-    """转发聊天请求到 Grok. 账号级重试 + 延迟感知节点 + 死节点剔除 + 401自动续期"""
+def chat_completion(body, api_key='', exclude_account=None):
+    """转发聊天请求到 Grok. 账号级重试 + 延迟感知节点 + 死节点剔除 + 401自动续期
+    exclude_account: 断连重试时排除该账号 (避免再次选中断连的账号导致二次断连)"""
     # 限流检查
     if not check_token_bucket():
         return None, {'error': {'message': '服务繁忙，请稍后重试', 'type': 'rate_limited'}, 'code': 503}
@@ -413,6 +414,8 @@ def chat_completion(body, api_key=''):
 
         # 账号级重试: 最多尝试3个不同账号 (401/429/节点失败换账号)
         tried_accounts = set()  # 本次请求已尝试过的账号 (避免重试重复撞同一账号)
+        if exclude_account:
+            tried_accounts.add(exclude_account)  # 断连重试: 排除断连账号
         for _attempt in range(3):
             account = pick_account('least_used', exclude=tried_accounts)
             if not account:

@@ -445,9 +445,9 @@ def v1_chat(body: dict, request: Request, auth: HTTPAuthorizationCredentials = D
                 # 流式中途断连 (上游连接关闭等)
                 print(f"[stream] {account_email} 流中断连: {e}", flush=True)
                 if not yielded_any:
-                    # 开局即断 (客户端未收到任何内容): 自动换账号重试一次
+                    # 开局即断 (客户端未收到任何内容): 自动换账号重试一次 (排除断连账号)
                     try:
-                        r2, e2 = api_service.chat_completion(body, api_key='***')
+                        r2, e2 = api_service.chat_completion(body, api_key='***', exclude_account=account_email)
                         if e2 and 'stream' in e2:
                             print(f"[stream] {account_email} 断连后换账号重试成功", flush=True)
                             for chunk2 in e2['stream']:
