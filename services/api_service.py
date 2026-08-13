@@ -343,9 +343,52 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
                 _mark_alive(port)
                 _record_quota(account['email'], r.headers)
                 if stream:
-                    return None, {'stream': r.iter_content(chunk_size=1024), 'status': r.status_code,
-                                  'headers': dict(r.headers), 'account': account['email'], 'node': port,
-                                  'api_key': api_key, 'model': model}
+                    # 预读第一个 chunk 判断是否合法 SSE (上游偶发 200+纯文本错误 "stream mode is not enabled")
+                    it = r.iter_content(chunk_size=1024)
+                    try:
+                        _first = next(it)
+                    except StopIteration:
+                        _first = b''
+                    if _first and _first.lstrip().startswith(b'data:'):
+                        # 合法 SSE 流: 原样透传 (把预读的 chunk 一起带上)
+                        def _sse_pass():
+                            if _first:
+                                yield _first
+                            for c in it:
+                                yield c
+                        return None, {'stream': _sse_pass(), 'status': r.status_code,
+                                      'headers': dict(r.headers), 'account': account['email'], 'node': port,
+                                      'api_key': api_key, 'model': model}
+                    # 非法 SSE: 上游不支持流式, 降级为非流式重发并包装成 SSE 返回
+                    try:
+                        _rest = (_first + b''.join(it)) if _first else b''.join(it)
+                    except Exception:
+                        _rest = _first or b''
+                    print(f"[api] {account['email']} 流式响应非SSE({_rest[:60]!r}), 降级非流式重发", flush=True)
+                    payload_ns = dict(body)
+                    payload_ns['model'] = model
+                    payload_ns['stream'] = False
+                    r2 = s.post(upstream_url, json=payload_ns, headers=headers, timeout=30)
+                    if r2.status_code in (200, 201):
+                        data2 = r2.json()
+                        # 包装成 OpenAI SSE chunk
+                        _content = ((data2.get('choices') or [{}])[0].get('message', {}) or {}).get('content', '')
+                        _chunk = {
+                            'id': data2.get('id', 'chatcmpl-degrade'),
+                            'object': 'chat.completion.chunk',
+                            'created': int(_t.time()),
+                            'model': model,
+                            'choices': [{'index': 0, 'delta': {'content': _content}, 'finish_reason': 'stop'}],
+                        }
+                        _sse_bytes = f'data: {json.dumps(_chunk, ensure_ascii=False)}\n\n'.encode('utf-8')
+                        def _sse_wrapped():
+                            yield _sse_bytes
+                            yield b'data: [DONE]\n\n'
+                        return None, {'stream': _sse_wrapped(), 'status': r2.status_code,
+                                      'headers': dict(r2.headers), 'account': account['email'], 'node': port,
+                                      'api_key': api_key, 'model': model}
+                    # 降级也失败 → 换账号重试
+                    return None
                 else:
                     data = r.json()
                     try:
