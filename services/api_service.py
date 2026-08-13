@@ -65,16 +65,21 @@ _usage_cache = {'counts': {}, 'ts': 0}
 _usage_lock = threading.Lock()
 
 def _get_usage_counts():
-    """获取 usage 统计 (带缓存)"""
+    """获取 usage 统计 (带缓存) - 按账号统计实际 token 消耗 (而非请求次数)"""
     now = time.time()
     with _usage_lock:
         if now - _usage_cache['ts'] < 60 and _usage_cache['counts']:
             return _usage_cache['counts']
-    # 重新统计
+    # 重新统计: 按账号汇总 total_tokens
     conn = get_conn()
     counts = {}
-    for r in conn.execute("SELECT account_email, COUNT(*) as c FROM usage GROUP BY account_email").fetchall():
-        counts[r['account_email']] = r['c']
+    try:
+        for r in conn.execute("SELECT account_email, COALESCE(SUM(total_tokens),0) as t FROM usage GROUP BY account_email").fetchall():
+            counts[r['account_email']] = r['t']
+    except Exception:
+        # 表结构兼容 (老版本无 total_tokens 时退回请求计数)
+        for r in conn.execute("SELECT account_email, COUNT(*) as c FROM usage GROUP BY account_email").fetchall():
+            counts[r['account_email']] = r['c']
     conn.close()
     with _usage_lock:
         _usage_cache['counts'] = counts
@@ -168,7 +173,9 @@ def _is_429_cooled(email):
         return False
 
 def _pick_least_used(conn):
-    """智能调度: 优先选剩余额度高的账号 (结合 usage + quota)"""
+    """智能调度 (主动负载均衡): 优先选剩余额度高、消耗少的账号.
+    不等 429 才切号: 剩余额度越低, 选中概率越低 (非致命加权, 不会完全排除).
+    """
     rows = conn.execute("""
         SELECT * FROM accounts
         WHERE status='active' AND pool_status='active' AND access_token != ''
@@ -176,7 +183,7 @@ def _pick_least_used(conn):
     """).fetchall()
     if not rows:
         return None
-    counts = _get_usage_counts()
+    counts = _get_usage_counts()  # email -> 已消耗 token 总数
     # 获取所有账号的 quota 数据 (使用 row[0] 和 row[1] 因为 fetchall 返回 tuple)
     quotas = {}
     quota_rows = conn.execute("SELECT email, quota FROM accounts WHERE status='active' AND pool_status='active'").fetchall()
@@ -186,7 +193,10 @@ def _pick_least_used(conn):
             quotas[r[0]] = q  # r[0] 是 email 列
         except:
             quotas[r[0]] = {}
-    # 计算每个账号的得分: 请求次数 + 额度消耗比例
+    # 计算每个账号的得分 (越低越优先):
+    #   consumed_score: 已消耗 token 占比 (0~1000)  —— 基于真实 token 消耗, 避免长请求被低估
+    #   quota_score:    剩余额度比例 (0~1000)      —— 剩余越少分越高, 主动避开快耗尽的账号
+    #   penalty:        低额度减速 (剩余<30% 加权递增, 非致命)
     scores = []
     for row in rows:
         email = row['email']
@@ -199,31 +209,39 @@ def _pick_least_used(conn):
         # busy 锁: 已被其他请求占用的账号跳过 (避免并发重复选中)
         if email in _account_busy:
             continue
-        usage_count = counts.get(email, 0)
+        consumed = counts.get(email, 0)  # 已消耗 token
         quota = quotas.get(email, {})
         remaining = quota.get('remaining_tokens', None)
         limit = quota.get('limit_tokens', 0)
         # 额度明确为0 (429耗尽) → 跳过
         if remaining is not None and remaining == 0:
             continue
-        # 额度未知 (quota为空) → 视为可用, 得分中额度部分给中性值
         if remaining is None or limit == 0:
-            score = usage_count * 1000 + 50  # 未知额度给中性分
+            # 额度未知 (quota为空) → 视为可用, 中性分 (按消耗分 + 固定50)
+            consumed_pct = min(consumed / 1000000, 1.0)  # 默认按 100万 上限估算
+            score = consumed_pct * 500 + 50
             scores.append((score, dict(row)))
             continue
-        # 得分 = 请求次数 * 1000 + (1 - 剩余比例) * 100
-        # 优先选请求次数少且剩余额度高的账号
-        usage_score = usage_count * 1000
-        pct = remaining / limit if limit > 0 else 0
-        quota_score = int((1 - pct) * 100)
-        score = usage_score + quota_score
+        # 真实额度已知:
+        pct = remaining / limit if limit > 0 else 0  # 剩余比例 0~1
+        consumed_pct = min(consumed / limit, 1.0) if limit > 0 else 0
+        consumed_score = consumed_pct * 500          # 已消耗越多分越高
+        quota_score = int((1 - pct) * 800)           # 剩余越少分越高 (权重高于消耗)
+        # 低额度减速: 剩余 <30% 时额外加权 (仍可被选中, 只是优先级低; 不会像 0 那样跳过)
+        penalty = 0
+        if pct < 0.30:
+            penalty = int((0.30 - pct) * 1500)       # 剩余30%时 +0, 剩余0%时 +450
+        score = consumed_score + quota_score + penalty
         scores.append((score, dict(row)))
     # 如果没有有效额度的账号，回退到原始逻辑
     if not scores:
         scores = [(counts.get(row['email'], 0) * 1000, dict(row)) for row in rows]
     # 按得分排序，选最低的
     scores.sort(key=lambda x: x[0])
-    return scores[0][1] if scores else None
+    # 同分轮换: 取最低分, 在所有同分账号间随机选 (避免同额度账号总是压同一个)
+    min_score = scores[0][0]
+    top = [item for item in scores if item[0] <= min_score + 1]  # 允许微小分差一起轮换
+    return random.choice(top)[1] if top else scores[0][1]
 
 def pick_account(strategy='round_robin'):
     conn = get_conn()
@@ -568,6 +586,8 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
                 else:
                     # 临时限流: 不冷却, 标注一下(面板显示"限流中"), 换节点/账号继续
                     _mark_rate_limited(account['email'])
+                    # 关键: 429 响应头常带真实剩余额度, 记录下来让调度器提前感知 (不用等耗尽才切)
+                    _record_quota(account['email'], r.headers)
                     print(f"[api] {account['email']} 429临时限流(remaining={rem_tok or '未知'}), 标注限流, 换账号", flush=True)
                 try:
                     s.close()
@@ -989,13 +1009,9 @@ def _record_quota(email, headers):
             if old_quota:
                 _update_quota_cache(email)
                 return
-            # 无旧值时才用默认 (新账号无数据)
-            quota_data = {
-                'remaining_tokens': 0,
-                'limit_tokens': 1000000,
-                'remaining_requests': 0,
-                'limit_requests': 21,
-            }
+            # 无旧值且无响应头: 保留未知 (不写 remaining=0, 避免把临时限流误标成耗尽)
+            # 只有明确 429 耗尽 (free-usage-exhausted) 时才由调用方标记冷却, 这里不写死
+            return
         else:
             quota_data = {
                 'remaining_tokens': int(remaining_tokens),
