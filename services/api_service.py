@@ -100,10 +100,17 @@ def _pick_round_robin(conn):
     """).fetchall()
     if not rows:
         return None
-    with _plock:
-        _last_picked_idx = (_last_picked_idx + 1) % len(rows)
-        pick = rows[_last_picked_idx]
-    row = conn.execute("SELECT * FROM accounts WHERE email=?", (pick['email'],)).fetchone()
+    # 跳过冷却/限流标注的账号
+    for _ in range(len(rows) * 2):
+        with _plock:
+            _last_picked_idx = (_last_picked_idx + 1) % len(rows)
+            cand = rows[_last_picked_idx]['email']
+        if _is_429_cooled(cand) or _is_rate_limited(cand):
+            continue
+        row = conn.execute("SELECT * FROM accounts WHERE email=?", (cand,)).fetchone()
+        return dict(row) if row else None
+    # 全部都被限流/冷却 → 回退选第一个
+    row = conn.execute("SELECT * FROM accounts WHERE email=?", (rows[0]['email'],)).fetchone()
     return dict(row) if row else None
 
 # 账号 429 冷却: email -> cooldown_until_ts (内存级, 429后30分钟不参与调度)
@@ -195,6 +202,9 @@ def _pick_least_used(conn):
         email = row['email']
         # 429 冷却期内跳过 (实时生效)
         if _is_429_cooled(email):
+            continue
+        # 临时限流标注中跳过 (429限流, 几秒~几分钟内不参与调度, 到期自动恢复)
+        if _is_rate_limited(email):
             continue
         # busy 锁: 已被其他请求占用的账号跳过 (避免并发重复选中)
         if email in _account_busy:
@@ -315,6 +325,12 @@ def chat_completion(body, api_key=''):
 
         # 节点选择: 纯按延迟排序 (排除死节点 + 未探测排最后)
         node_list = _get_usable_nodes()
+        # 防御: 可用节点过少 (死节点过多) 时重置死节点标记, 避免全部节点被误标死导致全失败
+        if len(node_list) < 3:
+            with _dead_lock:
+                _dead_nodes.clear()
+            node_list = _get_usable_nodes()
+            print(f"[api] 可用节点过少({len(node_list)}), 已重置死节点标记", flush=True)
         ports = sorted(node_list, key=lambda p: _get_node_speed_score(p))
         ports = ports[:5]  # 每个账号最多试5个节点
 
@@ -363,8 +379,20 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
             if stream:
                 payload['stream'] = True
 
+            # 动态超时: 长生成/流式需要更长时间
+            # 非流式 max_tokens>=2000 给足 240s (grok-4.6 生成长 HTML/代码可能 >90s)
+            _max_tok = int(body.get('max_tokens') or 0)
+            if stream:
+                _timeout = 60
+            elif _max_tok >= 2000:
+                _timeout = 240
+            elif _max_tok >= 500:
+                _timeout = 120
+            else:
+                _timeout = 45
+
             t0 = _t.time()
-            r = s.post(upstream_url, json=payload, headers=headers, timeout=30, stream=stream)
+            r = s.post(upstream_url, json=payload, headers=headers, timeout=_timeout, stream=stream)
             latency = int((_t.time() - t0) * 1000)
             _update_latency(port, latency)
 
@@ -491,19 +519,26 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
                     print(f"[api] {account['email']} 401处理异常: {e}", flush=True)
                     return None
             elif r.status_code == 429:
-                # 区分: 真额度耗尽 (响应头 remaining-tokens=0) vs 临时限流 (无额度头/额度未0)
-                # 临时限流不应冷却账号 (几秒后自动恢复), 只打日志标注
+                # 区分: 真额度耗尽 vs 临时限流
+                # 真耗尽判定: ① 响应头 remaining-tokens=0 ② 或 body 错误码含 exhausted/usage 关键词
                 h = {k.lower(): v for k, v in r.headers.items()}
                 rem_tok = h.get('x-ratelimit-remaining-tokens')
                 try:
                     rem_tok_i = int(rem_tok) if rem_tok else None
                 except Exception:
                     rem_tok_i = None
-                if rem_tok_i == 0:
+                # 尝试读 body 错误码 (如 subscription:free-usage-exhausted)
+                body_txt = ''
+                try:
+                    body_txt = r.text.lower() or ''
+                except Exception:
+                    pass
+                body_exhausted = any(k in body_txt for k in ('free-usage-exhausted', 'usage-exhausted', 'out of tokens', 'insufficient_quota'))
+                if rem_tok_i == 0 or body_exhausted:
                     # 真额度耗尽: 记录 quota=0 + 30分钟冷却
                     _record_quota(account['email'], r.headers)
                     _mark_429_cooldown(account['email'])
-                    print(f"[api] {account['email']} 429真额度耗尽(remaining=0), 冷却30min, 换账号", flush=True)
+                    print(f"[api] {account['email']} 429真额度耗尽(remaining={rem_tok or '未知'}{'/body:'+body_txt[:40] if body_exhausted else ''}), 冷却30min, 换账号", flush=True)
                 else:
                     # 临时限流: 不冷却, 标注一下(面板显示"限流中"), 换节点/账号继续
                     _mark_rate_limited(account['email'])
@@ -514,7 +549,12 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
                 print(f"[api] {account['email']} 节点{port} {r.status_code}, 试下一节点", flush=True)
                 continue
         except Exception as e:
-            _mark_dead(port)  # 连不上/超时 → 标记死节点
+            # 超时 (Timeout) 不应标记死节点 (可能是长生成, 不是节点故障); 连接错误才标记
+            _err = str(e).lower()
+            if 'timeout' in _err or 'timed out' in _err:
+                print(f"[api] {account['email']} 节点{port} 超时(长生成?), 不标死, 试下一节点", flush=True)
+            else:
+                _mark_dead(port)  # 连不上/连接错误 → 标记死节点
             continue
     return None  # 该账号所有节点失败, 换账号
 
