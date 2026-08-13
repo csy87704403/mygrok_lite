@@ -343,13 +343,22 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
                 _mark_alive(port)
                 _record_quota(account['email'], r.headers)
                 if stream:
-                    # 预读第一个 chunk 判断是否合法 SSE (上游偶发 200+纯文本错误 "stream mode is not enabled")
+                    # 预读第一个 chunk 判断是否合法 SSE
+                    # 合法 SSE 可能以 data: / : keepalive(注释) / 空行 开头, 都算合法
+                    # 只有纯文本错误 (如 "stream mode is not enabled") 才算非法 → 降级
                     it = r.iter_content(chunk_size=1024)
                     try:
                         _first = next(it)
                     except StopIteration:
                         _first = b''
-                    if _first and _first.lstrip().startswith(b'data:'):
+                    _first_strip = _first.lstrip()
+                    _is_legit_sse = (
+                        _first_strip.startswith(b'data:')
+                        or _first_strip.startswith(b':')
+                        or _first_strip.startswith(b'event:')
+                        or not _first_strip
+                    )
+                    if _is_legit_sse:
                         # 合法 SSE 流: 原样透传 (把预读的 chunk 一起带上)
                         def _sse_pass():
                             if _first:
