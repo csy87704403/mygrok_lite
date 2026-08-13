@@ -468,48 +468,126 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
     return None  # 该账号所有节点失败, 换账号
 
 
-def list_models():
-    # 实测: 免费账号只有 grok-4.5 有额度, 其他模型 402 无额度 / 已下线
-    return [
-        {
-            "id": "grok-4.5",
-            "object": "model",
-            "owned_by": "xai",
-            "active": True,
-            "created": 1740000000,
-            # 多模态能力声明 (与 xAI 官方一致): 支持文本+图片+PDF 输入
-            "modalities": {
-                "input": ["text", "image", "pdf"],
-                "output": ["text"]
-            },
-            "attachment": True,
-            "reasoning": True,
-            "temperature": True,
-            "tool_call": True,
-            "limit": {
-                "context": 1000000,
-                "output": 32768
-            },
-        },
-    ]
+_models_cache = {'ts': 0, 'ids': []}
 
-# 模型名 → 实际可用模型 映射 (无效模型自动回退 grok-4.5)
+def list_models():
+    """返回上游 Grok 当前可用模型 (动态探测, 5分钟缓存, 失败回退内置列表)"""
+    now = time.time()
+    if _models_cache['ids'] and now - _models_cache['ts'] < 300:
+        return _models_cache['ids']
+    ids = _probe_upstream_models()
+    if ids:
+        _models_cache['ts'] = now
+        _models_cache['ids'] = ids
+        return ids
+    # 回退: 内置默认 (上游探测失败时)
+    return _BUILTIN_MODELS
+
+_BUILTIN_MODELS = [
+    {
+        "id": "grok-4.6",
+        "object": "model",
+        "owned_by": "xai",
+        "active": True,
+        "created": 1740000000,
+        "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+        },
+        "attachment": True,
+        "reasoning": True,
+        "temperature": True,
+        "tool_call": True,
+        "limit": {
+            "context": 1000000,
+            "output": 32768
+        },
+    },
+    {
+        "id": "grok-4.5",
+        "object": "model",
+        "owned_by": "xai",
+        "active": True,
+        "created": 1740000000,
+        "modalities": {
+            "input": ["text", "image", "pdf"],
+            "output": ["text"]
+        },
+        "attachment": True,
+        "reasoning": True,
+        "temperature": True,
+        "tool_call": True,
+        "limit": {
+            "context": 1000000,
+            "output": 32768
+        },
+    },
+]
+
+def _probe_upstream_models():
+    """真实探测上游 /v1/models, 返回模型描述列表 (失败返回 [])"""
+    try:
+        from services.account_service import get_account
+        from services.registration_service import get_node_proxy
+        from curl_cffi import requests as cffi
+        # 取一个 active 账号探测 (复用调度逻辑取最近使用账号)
+        try:
+            acc = pick_account('least_used')
+        except Exception:
+            acc = None
+        if not acc:
+            return []
+        at = acc.get('access_token', '')
+        if not at:
+            return []
+        node = acc.get('node_port', 'mihomo:8001') or 'mihomo:8001'
+        s = cffi.Session(impersonate='chrome131')
+        p_url, _ = get_node_proxy(str(node))
+        s.proxies = {'http': p_url, 'https': p_url}
+        r = s.get('https://cli-chat-proxy.grok.com/v1/models',
+                  headers={'Authorization': f'Bearer {at}', 'X-XAI-Token-Auth': 'xai-grok-cli'},
+                  timeout=10)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        return [
+            {
+                "id": m.get('id', ''),
+                "object": "model",
+                "owned_by": m.get('owned_by', 'xai'),
+                "active": True,
+                "created": m.get('created', 1740000000),
+                "modalities": {"input": ["text", "image", "pdf"], "output": ["text"]},
+                "attachment": True,
+                "reasoning": True,
+                "temperature": True,
+                "tool_call": True,
+                "limit": {"context": 1000000, "output": 32768},
+            }
+            for m in data.get('data', []) if m.get('id')
+        ]
+    except Exception as e:
+        print(f"[models] 上游模型探测失败: {e}", flush=True)
+        return []
+
+# 模型名 → 实际可用模型 映射 (无效模型自动回退 grok-4.6)
 _MODEL_ALIASES = {
-    'grok-2': 'grok-4.5',
-    'grok-2-latest': 'grok-4.5',
-    'grok-3': 'grok-4.5',
-    'grok-3-mini': 'grok-4.5',
-    'grok-3-fast': 'grok-4.5',
-    'grok-4': 'grok-4.5',
-    'grok-4-fast': 'grok-4.5',
-    'grok-4.5': 'grok-4.5',
+    'grok-2': 'grok-4.6',
+    'grok-2-latest': 'grok-4.6',
+    'grok-3': 'grok-4.6',
+    'grok-3-mini': 'grok-4.6',
+    'grok-3-fast': 'grok-4.6',
+    'grok-4': 'grok-4.6',
+    'grok-4-fast': 'grok-4.6',
+    'grok-4.5': 'grok-4.6',
+    'grok-4.6': 'grok-4.6',
 }
 
 def _resolve_model(model):
-    """把无效模型名映射到 grok-4.5"""
+    """把无效模型名映射到 grok-4.6"""
     if not model:
-        return 'grok-4.5'
-    return _MODEL_ALIASES.get(model, 'grok-4.5')
+        return 'grok-4.6'
+    return _MODEL_ALIASES.get(model, 'grok-4.6')
 
 # ============ 用量统计 ============
 
