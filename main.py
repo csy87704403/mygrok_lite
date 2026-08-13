@@ -482,6 +482,160 @@ def v1_chat(body: dict, request: Request, auth: HTTPAuthorizationCredentials = D
     resp = {k: v for k, v in result.items() if not k.startswith('_')}
     return JSONResponse(resp)
 
+
+# ============ Responses API 兼容层 (/v1/responses) ============
+# OpenAI Responses 格式 -> 内部 chat/completions 转换
+# 支持: 非流式 + 流式 (SSE 事件: response.created / output_text.delta / response.completed)
+
+def _responses_to_chat_body(body: dict) -> dict:
+    """把 Responses API 请求体翻译成 chat/completions 请求体"""
+    chat = {
+        'model': body.get('model', 'grok-4.6'),
+        'stream': body.get('stream', False),
+    }
+    # input: 可以是字符串 或 [{"role","content"}] 数组
+    inp = body.get('input', '')
+    if isinstance(inp, str):
+        chat['messages'] = [{'role': 'user', 'content': inp}]
+    elif isinstance(inp, list):
+        msgs = []
+        for item in inp:
+            if isinstance(item, str):
+                msgs.append({'role': 'user', 'content': item})
+            elif isinstance(item, dict):
+                role = item.get('role', 'user')
+                content = item.get('content', '')
+                # content 可能是字符串或数组 [{type:text,text:...}]
+                if isinstance(content, list):
+                    texts = [c.get('text', '') for c in content if isinstance(c, dict) and c.get('type') == 'text']
+                    content = '\n'.join(t for t in texts if t)
+                # image 输入: 数组里 type=image_url 的转成 OpenAI 图片格式
+                img_urls = [c['image_url']['url'] for c in content if isinstance(c, dict) and c.get('type') == 'image_url'] if isinstance(content, list) else []
+                if img_urls and isinstance(content, str) is False:
+                    parts = [{'type': 'text', 'text': content or ''}] if content else []
+                    for u in img_urls:
+                        parts.append({'type': 'image_url', 'image_url': {'url': u}})
+                    content = parts
+                msgs.append({'role': role, 'content': content})
+        # 兼容开发者消息 (system)
+        if msgs and msgs[0].get('role') == 'developer':
+            msgs[0]['role'] = 'system'
+        chat['messages'] = msgs if msgs else [{'role': 'user', 'content': ''}]
+    # max_output_tokens -> max_tokens
+    if body.get('max_output_tokens'):
+        chat['max_tokens'] = body['max_output_tokens']
+    # 温度
+    if body.get('temperature') is not None:
+        chat['temperature'] = body['temperature']
+    # 工具: 支持 function 类型 (直接透传 tools)
+    tools = body.get('tools')
+    if tools:
+        chat['tools'] = [t for t in tools if t.get('type') == 'function']
+    return chat
+
+
+def _chat_resp_to_responses(data: dict, body: dict) -> dict:
+    """把 chat/completions 响应翻译成 Responses API 响应"""
+    choice = (data.get('choices') or [{}])[0]
+    msg = choice.get('message', {})
+    content = msg.get('content') or ''
+    reasoning = msg.get('reasoning_content') or ''
+    now = int(time.time())
+    resp_id = 'resp_' + (data.get('id', '') or 'chatcmpl')[-12:]
+    output = []
+    if reasoning:
+        output.append({
+            'type': 'reasoning', 'id': f'reasoning_{now}', 'summary': [],
+            'content': [{'type': 'output_text', 'text': reasoning, 'annotations': []}],
+        })
+    output.append({
+        'type': 'message', 'id': f'msg_{now}', 'status': 'completed',
+        'role': 'assistant',
+        'content': [{'type': 'output_text', 'text': content, 'annotations': []}],
+    })
+    usage = data.get('usage') or {}
+    return {
+        'id': resp_id,
+        'object': 'response',
+        'created_at': now,
+        'status': 'completed',
+        'model': data.get('model', body.get('model', 'grok-4.6')),
+        'output': output,
+        'output_text': content,
+        'usage': {
+            'input_tokens': usage.get('prompt_tokens', 0),
+            'output_tokens': usage.get('completion_tokens', 0),
+            'total_tokens': usage.get('total_tokens', 0),
+        },
+    }
+
+
+def _chat_chunk_to_responses_event(chunk_bytes: bytes, resp_id: str, created_at: int, model: str):
+    """把 chat/completions 流式 chunk 翻译成 Responses SSE 事件 (返回事件列表)"""
+    events = []
+    txt = chunk_bytes.decode('utf-8', errors='ignore')
+    for line in txt.split('\n'):
+        line = line.strip()
+        if not line.startswith('data:'):
+            continue
+        payload = line[5:].strip()
+        if payload == '[DONE]':
+            events.append(('response.completed', {
+                'type': 'response.completed', 'response': {
+                    'id': resp_id, 'object': 'response', 'created_at': created_at,
+                    'status': 'completed', 'model': model,
+                    'output': [], 'output_text': '',
+                    'usage': {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0},
+                }}))
+            continue
+        try:
+            d = json.loads(payload)
+        except Exception:
+            continue
+        delta = (d.get('choices') or [{}])[0].get('delta', {})
+        content = delta.get('content') or ''
+        if content:
+            events.append(('response.output_text.delta', {
+                'type': 'response.output_text.delta', 'delta': content,
+            }))
+    return events
+
+
+@app.post("/v1/responses")
+def v1_responses(body: dict, auth: HTTPAuthorizationCredentials = Depends(security)):
+    """Responses API 兼容端点: 翻译成 chat/completions 转发, 响应翻译回 Responses 格式"""
+    api_key = auth.credentials
+    if not key_service.valid_key(api_key):
+        raise HTTPException(status_code=401, detail="Invalid API key")
+
+    stream = body.get('stream', False)
+    chat_body = _responses_to_chat_body(body)
+    result, err = api_service.chat_completion(chat_body, api_key='***')
+
+    # 流式
+    if stream and err and 'stream' in err:
+        stream_data = err['stream']
+        resp_id = 'resp_' + str(int(time.time()))
+        created_at = int(time.time())
+        model = body.get('model', 'grok-4.6')
+        header_sent = {'v': False}
+
+        def _resp_stream_wrapper():
+            # 先发 response.created
+            yield f'data: {json.dumps({"type": "response.created", "response": {"id": resp_id, "object": "response", "created_at": created_at, "status": "in_progress", "model": model}})}\n\n'.encode('utf-8')
+            try:
+                for chunk in stream_data:
+                    for etype, edata in _chat_chunk_to_responses_event(chunk, resp_id, created_at, model):
+                        yield f'data: {json.dumps(edata, ensure_ascii=False)}\n\n'.encode('utf-8')
+            finally:
+                yield b'data: [DONE]\n\n'
+        return StreamingResponse(_resp_stream_wrapper(), media_type="text/event-stream")
+
+    if err:
+        return JSONResponse(err, status_code=err.get('code', 500))
+
+    return JSONResponse(_chat_resp_to_responses(result, body))
+
 # ============ 任务日志 ============
 
 @app.get("/api/tasks")
