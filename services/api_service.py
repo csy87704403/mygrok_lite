@@ -39,22 +39,29 @@ def _get_session(port):
     return cffi.Session(impersonate='chrome131')
 
 # ============ 节点延迟缓存 ============
-_node_latency = {}  # port -> avg_latency_ms
+_node_latency = {}  # port -> avg_latency_ms (仅探测延迟, 纯净连接速度)
 _latency_lock = threading.Lock()
 
 def _update_latency(port, latency_ms):
+    """记录节点延迟 (仅用于诊断, 不参与排序 — 请求耗时含上游生成, 会污染节点排序)"""
     with _latency_lock:
         old = _node_latency.get(port, [])
         old.append(latency_ms)
         _node_latency[port] = old[-10:]  # 保留最近10次
 
 def _get_node_speed_score(port):
-    """返回节点速度分 (越小越快), 无记录返回大数(排最后)"""
+    """返回节点速度分 (越小越快), 无记录返回大数(排最后).
+    注意: 排序依据 = 探测延迟 (纯连接) + 请求观测延迟加权.
+    """
     with _latency_lock:
         latencies = _node_latency.get(port, [])
     if not latencies:
         return 999999  # 未探测节点排最后
-    return sum(latencies) / len(latencies)
+    # 只取最近3次 (避免老数据), 且过滤异常值 (>10s 的生成耗时不算节点速度)
+    recent = [l for l in latencies[-3:] if l < 10000]
+    if not recent:
+        return 999999
+    return sum(recent) / len(recent)
 
 # ============ 账号选择 ============
 _plock = threading.Lock()
@@ -866,7 +873,7 @@ _node_check_state = {
     'dead_ports': [],  # 最近一次检测到的死节点
 }
 _node_check_lock = threading.Lock()
-_NODE_CHECK_INTERVAL = 600  # 10分钟一轮
+_NODE_CHECK_INTERVAL = 300  # 5分钟一轮 (启动后立即探测一次, 让节点排序尽快有数据)
 _NODE_CHECK_TIMEOUT = 8  # 每节点8秒超时
 
 def _probe_node(port):
@@ -888,7 +895,7 @@ def _probe_node(port):
         return {'port': str(port), 'ok': False, 'latency': None, 'code': str(e)[:60]}
 
 def _node_check_loop():
-    """后台检测循环: 每10分钟并发探测所有节点"""
+    """后台检测循环: 启动后立即探测一次 (让节点排序尽快有数据), 之后每5分钟一轮"""
     while True:
         try:
             _run_node_check()
