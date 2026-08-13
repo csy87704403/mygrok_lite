@@ -37,6 +37,11 @@ def init_db():
         note TEXT DEFAULT '',
         source TEXT DEFAULT 'cpa'
     )""")
+    # 兼容旧表: 429 耗尽冷却截止时间 (持久化, 重启后仍生效, 避免冷启动再撞429)
+    try:
+        c.execute("ALTER TABLE accounts ADD COLUMN quota_cooldown_until REAL DEFAULT 0")
+    except:
+        pass
     
     # API Key 表
     c.execute("""

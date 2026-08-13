@@ -158,19 +158,50 @@ def _account_busy_release(email):
         _account_busy.discard(email)
 
 def _mark_429_cooldown(email, seconds=1800):
-    """标记账号 429 冷却 (实时生效, 不依赖数据库quota值)"""
+    """标记账号 429 冷却 (实时生效 + 持久化到数据库, 重启后仍生效)"""
+    until = time.time() + seconds
     with _quota_429_lock:
-        _quota_429_cooldown[email] = time.time() + seconds
+        _quota_429_cooldown[email] = until
+    # 持久化: 写入数据库 quota_cooldown_until 字段
+    try:
+        from db import get_conn as _gc
+        _c = _gc()
+        _c.execute("UPDATE accounts SET quota_cooldown_until=? WHERE email=?", (until, email))
+        _c.commit()
+        _c.close()
+    except Exception:
+        pass
 
 def _is_429_cooled(email):
-    """检查账号是否在 429 冷却期"""
+    """检查账号是否在 429 冷却期 (内存 + 数据库持久化状态取最大)"""
     with _quota_429_lock:
         until = _quota_429_cooldown.get(email, 0)
         if until > time.time():
             return True
         if until and until <= time.time():
             _quota_429_cooldown.pop(email, None)
-        return False
+    # 查数据库持久化冷却 (重启后仍生效, 避免冷启动再撞 429)
+    try:
+        from db import get_conn as _gc
+        _c = _gc()
+        row = _c.execute("SELECT quota_cooldown_until FROM accounts WHERE email=?", (email,)).fetchone()
+        _c.close()
+        if row and row['quota_cooldown_until']:
+            db_until = float(row['quota_cooldown_until'])
+            if db_until > time.time():
+                # 同步到内存
+                with _quota_429_lock:
+                    _quota_429_cooldown[email] = db_until
+                return True
+            elif db_until <= time.time() and db_until > 0:
+                # 已过期, 清除持久化标记
+                _c2 = _gc()
+                _c2.execute("UPDATE accounts SET quota_cooldown_until=0 WHERE email=?", (email,))
+                _c2.commit()
+                _c2.close()
+    except Exception:
+        pass
+    return False
 
 def _pick_least_used(conn):
     """智能调度 (主动负载均衡): 优先选剩余额度高、消耗少的账号.
