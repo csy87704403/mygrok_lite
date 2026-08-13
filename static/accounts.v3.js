@@ -106,6 +106,11 @@ refresh.accounts = async function() {
         quotaTxt = JSON.stringify(q).slice(0, 40);
       }
     } catch(e) {}
+    // 429 临时限流标注 (上游限流, 非额度耗尽, 几秒后自动恢复)
+    if (a.rate_limited) {
+      quotaTxt = '⏳限流中';
+      quotaColor = '#d97706';
+    }
     // 免费账号无真实 quota API，用 status 作为可用性指示
     if (quotaTxt === '-' || quotaTxt === '{}' || quotaTxt === '') {
       if (st === 'active') { quotaTxt = '可用'; quotaColor = '#16a34a'; }
@@ -152,7 +157,7 @@ refresh.accounts = async function() {
     html += `<tr>
       <td title="${esc(a.password)}">${esc(a.email)}</td>
       <td title="${esc(a.password)}">${esc(a.password)}</td>
-      <td><span class="status ${st}">${st}</span>${refreshLabel}</td>
+      <td><span class="status ${st}">${st}</span>${a.rate_limited ? '<span style="color:#d97706;font-size:11px;margin-left:4px">限流中</span>' : ''}${refreshLabel}</td>
       <td>${exp}</td>
       <td style="color:${quotaColor}">${quotaTxt}</td>
       <td>${esc(a.node_port || '-')}</td>

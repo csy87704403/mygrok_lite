@@ -110,6 +110,35 @@ def _pick_round_robin(conn):
 _quota_429_cooldown = {}
 _quota_429_lock = threading.Lock()
 
+# 账号 429 临时限流标注: email -> ts (面板显示"限流中", 5分钟内有效)
+_quota_429_rate_limited = {}
+_quota_429_rl_lock = threading.Lock()
+
+def _mark_rate_limited(email, seconds=300):
+    """标注账号临时限流 (面板可见, 不参与冷却/调度跳过)"""
+    with _quota_429_rl_lock:
+        _quota_429_rate_limited[email] = time.time() + seconds
+
+def _is_rate_limited(email):
+    """检查账号是否处于临时限流标注期"""
+    with _quota_429_rl_lock:
+        until = _quota_429_rate_limited.get(email, 0)
+        if until > time.time():
+            return True
+        if until and until <= time.time():
+            _quota_429_rate_limited.pop(email, None)
+        return False
+
+def _get_rate_limited_accounts():
+    """返回当前所有限流标注中的账号 (email -> 剩余秒)"""
+    with _quota_429_rl_lock:
+        now = time.time()
+        out = {}
+        for email, until in _quota_429_rate_limited.items():
+            if until > now:
+                out[email] = int(until - now)
+        return out
+
 # 账号 busy 锁: email -> bool (一个账号同时只处理一个请求, 防止并发重复选中同一账号)
 _account_busy = set()
 _account_busy_lock = threading.Lock()
@@ -462,10 +491,23 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
                     print(f"[api] {account['email']} 401处理异常: {e}", flush=True)
                     return None
             elif r.status_code == 429:
-                # 额度耗尽: 记录 quota=0 + 30分钟冷却, 换账号
-                _record_quota(account['email'], r.headers)
-                _mark_429_cooldown(account['email'])
-                print(f"[api] {account['email']} 429额度耗尽, 冷却30min, 换账号", flush=True)
+                # 区分: 真额度耗尽 (响应头 remaining-tokens=0) vs 临时限流 (无额度头/额度未0)
+                # 临时限流不应冷却账号 (几秒后自动恢复), 只打日志标注
+                h = {k.lower(): v for k, v in r.headers.items()}
+                rem_tok = h.get('x-ratelimit-remaining-tokens')
+                try:
+                    rem_tok_i = int(rem_tok) if rem_tok else None
+                except Exception:
+                    rem_tok_i = None
+                if rem_tok_i == 0:
+                    # 真额度耗尽: 记录 quota=0 + 30分钟冷却
+                    _record_quota(account['email'], r.headers)
+                    _mark_429_cooldown(account['email'])
+                    print(f"[api] {account['email']} 429真额度耗尽(remaining=0), 冷却30min, 换账号", flush=True)
+                else:
+                    # 临时限流: 不冷却, 标注一下(面板显示"限流中"), 换节点/账号继续
+                    _mark_rate_limited(account['email'])
+                    print(f"[api] {account['email']} 429临时限流(remaining={rem_tok or '未知'}), 标注限流, 换账号", flush=True)
                 return None
             else:
                 # 其他错误 (5xx等): 试下一个节点

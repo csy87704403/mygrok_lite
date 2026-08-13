@@ -95,6 +95,16 @@ def list_accounts(status=None, pool_status=None):
     sql += " ORDER BY id"
     rows = [dict(r) for r in conn.execute(sql, params).fetchall()]
     conn.close()
+    # 附加 429 临时限流标注 (内存态, 面板显示"限流中")
+    try:
+        from services.api_service import _get_rate_limited_accounts
+        rl = _get_rate_limited_accounts()
+        for row in rows:
+            if row['email'] in rl:
+                row['rate_limited'] = True
+                row['rate_limited_until'] = rl[row['email']]
+    except Exception:
+        pass
     return rows
 
 def get_account(email):
