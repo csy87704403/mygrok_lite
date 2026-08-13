@@ -86,8 +86,9 @@ def _get_usage_counts():
         _usage_cache['ts'] = now
     return counts
 
-def _pick_round_robin(conn):
+def _pick_round_robin(conn, exclude=None):
     global _last_picked_idx
+    exclude = exclude or set()
     rows = conn.execute("""
         SELECT email, id FROM accounts
         WHERE status='active' AND pool_status='active' AND access_token != ''
@@ -100,6 +101,8 @@ def _pick_round_robin(conn):
         with _plock:
             _last_picked_idx = (_last_picked_idx + 1) % len(rows)
             cand = rows[_last_picked_idx]['email']
+        if cand in exclude:
+            continue
         if _is_429_cooled(cand) or _is_rate_limited(cand):
             continue
         row = conn.execute("SELECT * FROM accounts WHERE email=?", (cand,)).fetchone()
@@ -203,10 +206,12 @@ def _is_429_cooled(email):
         pass
     return False
 
-def _pick_least_used(conn):
+def _pick_least_used(conn, exclude=None):
     """智能调度 (主动负载均衡): 优先选剩余额度高、消耗少的账号.
     不等 429 才切号: 剩余额度越低, 选中概率越低 (非致命加权, 不会完全排除).
+    exclude: 本次请求已尝试过的账号 (重试去重)
     """
+    exclude = exclude or set()
     rows = conn.execute("""
         SELECT * FROM accounts
         WHERE status='active' AND pool_status='active' AND access_token != ''
@@ -231,6 +236,9 @@ def _pick_least_used(conn):
     scores = []
     for row in rows:
         email = row['email']
+        # 本次请求已尝试过 (429/失败) → 跳过, 避免重试重复撞同一账号
+        if email in exclude:
+            continue
         # 429 冷却期内跳过 (实时生效)
         if _is_429_cooled(email):
             continue
@@ -274,20 +282,24 @@ def _pick_least_used(conn):
     top = [item for item in scores if item[0] <= min_score + 1]  # 允许微小分差一起轮换
     return random.choice(top)[1] if top else scores[0][1]
 
-def pick_account(strategy='round_robin'):
+def pick_account(strategy='least_used', exclude=None):
+    """选择账号. exclude: 本次请求已尝试过的账号集合 (重试时避免重复选同一账号)"""
+    exclude = exclude or set()
     conn = get_conn()
     try:
         if strategy == 'least_used':
-            return _pick_least_used(conn)
+            return _pick_least_used(conn, exclude=exclude)
         elif strategy == 'random':
             rows = conn.execute("""
                 SELECT * FROM accounts
                 WHERE status='active' AND pool_status='active' AND access_token != ''
                 ORDER BY id
             """).fetchall()
-            return dict(random.choice(rows)) if rows else None
+            import random as _rnd
+            cand = [dict(r) for r in rows if r['email'] not in exclude]
+            return _rnd.choice(cand) if cand else None
         else:
-            return _pick_round_robin(conn)
+            return _pick_round_robin(conn, exclude=exclude)
     finally:
         conn.close()
 
@@ -351,6 +363,28 @@ def _get_usable_nodes():
         alive = node_list
     return alive
 
+# 节点排序缓存: 30秒复用 (延迟数据变化慢, 不必每次请求都重排)
+_sorted_ports_cache = {'ts': 0, 'ports': []}
+_sorted_ports_lock = threading.Lock()
+
+def _get_sorted_ports(node_list):
+    """按延迟排序节点, 带30秒缓存"""
+    now = time.time()
+    with _sorted_ports_lock:
+        if _sorted_ports_cache['ports'] and now - _sorted_ports_cache['ts'] < 30:
+            return _sorted_ports_cache['ports']
+    # 重新排序: 已探测节点按延迟升序, 未探测节点排中间 (避免总是最后导致被忽略)
+    def _score(p):
+        s = _get_node_speed_score(p)
+        if s >= 999999:  # 未探测: 给中性分排中间, 而不是永远最后
+            return 5000
+        return s
+    ports = sorted(node_list, key=_score)
+    with _sorted_ports_lock:
+        _sorted_ports_cache['ports'] = ports
+        _sorted_ports_cache['ts'] = now
+    return ports
+
 def chat_completion(body, api_key=''):
     """转发聊天请求到 Grok. 账号级重试 + 延迟感知节点 + 死节点剔除 + 401自动续期"""
     # 限流检查
@@ -370,14 +404,17 @@ def chat_completion(body, api_key=''):
                 _dead_nodes.clear()
             node_list = _get_usable_nodes()
             print(f"[api] 可用节点过少({len(node_list)}), 已重置死节点标记", flush=True)
-        ports = sorted(node_list, key=lambda p: _get_node_speed_score(p))
-        ports = ports[:5]  # 每个账号最多试5个节点
+        # 节点排序缓存: 30秒内复用, 避免每次请求重新排序 (延迟数据变化慢)
+        _ports = _get_sorted_ports(node_list)
+        ports = _ports[:5]  # 每个账号最多试5个节点
 
         # 账号级重试: 最多尝试3个不同账号 (401/429/节点失败换账号)
+        tried_accounts = set()  # 本次请求已尝试过的账号 (避免重试重复撞同一账号)
         for _attempt in range(3):
-            account = pick_account('least_used')
+            account = pick_account('least_used', exclude=tried_accounts)
             if not account:
                 return None, {'error': {'message': '无可用账号(全部冷却/过期)', 'type': 'no_account'}, 'code': 503}
+            tried_accounts.add(account['email'])
             # 占用账号 busy 锁 (防止其他并发请求重复选中同一账号)
             if not _account_busy_mark(account['email']):
                 continue  # 竞争失败, 换账号
@@ -456,12 +493,24 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
                     )
                     if _is_legit_sse:
                         # 合法 SSE 流: 原样透传 (把预读的 chunk 一起带上)
+                        # 优化: 过滤 keepalive 注释行 (": keepalive"), 只透传 data/event 数据,
+                        #       减少客户端首字感知延迟 (注释行不承载内容, 但会先到达)
                         def _sse_pass():
                             try:
-                                if _first:
-                                    yield _first
+                                _pend = _first or b''
                                 for c in it:
-                                    yield c
+                                    _pend += c
+                                    # 按行切分, 过滤注释行后透传
+                                    while b'\n' in _pend:
+                                        _line, _pend = _pend.split(b'\n', 1)
+                                        _ls = _line.lstrip()
+                                        if _ls.startswith(b':'):  # SSE 注释 (keepalive) → 丢弃
+                                            continue
+                                        yield _line + b'\n'
+                                if _pend:  # 末尾残留 (无换行)
+                                    _ls = _pend.lstrip()
+                                    if not _ls.startswith(b':'):
+                                        yield _pend
                             finally:
                                 try:
                                     s.close()  # 流读完/断开都关闭 Session
