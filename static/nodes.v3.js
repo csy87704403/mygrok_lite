@@ -91,18 +91,20 @@ refresh.nodes = async function() {
 async function loadEgress() {
   try {
     const r = await api('/api/egress');
+    const direct = !!(r && r.data && r.data.direct);
     const cb = document.getElementById('egress-direct');
-    if (cb) cb.checked = !!(r && r.direct);
+    if (cb) cb.checked = direct;
     const st = document.getElementById('egress-status');
-    if (st) st.textContent = (r && r.direct) ? '✅ 当前出口：本地IP直连' : '🔀 当前出口：代理节点池';
+    if (st) st.textContent = direct ? '✅ 当前出口：本地IP直连' : '🔀 当前出口：代理节点池';
   } catch (e) {}
 }
 
 async function toggleEgress(checked) {
   try {
     const r = await api('/api/egress', 'POST', { direct: checked });
+    const direct = !!(r && r.data && r.data.direct);
     const st = document.getElementById('egress-status');
-    if (st) st.textContent = (r && r.direct) ? '✅ 当前出口：本地IP直连' : '🔀 当前出口：代理节点池';
+    if (st) st.textContent = direct ? '✅ 当前出口：本地IP直连' : '🔀 当前出口：代理节点池';
     toast(checked ? '已切换为本地IP直连（出口走平台本机IP）' : '已恢复为代理节点池出口', 'ok');
   } catch (e) {
     toast('切换失败', 'err');
