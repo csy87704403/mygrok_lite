@@ -6,7 +6,6 @@
   3. 保留: 邮箱逻辑 / SSO→OAuth→CPA 转换 / finally 浏览器清理
 """
 import os, sys, time, random, string, re, json, subprocess
-os.environ.setdefault('DISPLAY', ':1')
 from cloakbrowser import launch
 from curl_cffi import requests as cffi
 
@@ -144,7 +143,7 @@ def main():
         given, family = random_name()
         print(f"1. 邮箱:{email} 节点:{port} seed:{seed} tz:{tz} 名字:{given} {family} (try {attempt}/{max_tries})", flush=True)
 
-        browser=launch(headless=False, proxy={'server':proxy},
+        browser=launch(headless=True, proxy={'server':proxy},
                        timezone=tz, locale='en-US',
                        args=['--fingerprint-platform=macos',f'--fingerprint={seed}',
                              '--remote-debugging-port=9222','--remote-allow-origins=*'])
@@ -165,13 +164,15 @@ def main():
         # --- 新版注册流程: 先点 "Sign up with email" (入口选择页) ---
         if not click_btn(page, 'sign up with email', timeout=12, desc='Sign up with email'):
             print('❌ 未找到 Sign up with email 按钮', flush=True)
-            os.system('DISPLAY=:1 import -window root /tmp/g6_v7_nobtn.png')
+            try: page.screenshot(path='/tmp/g6_v7_nobtn.png')
+            except Exception: pass
             browser.close(); time.sleep(3); continue
 
         # --- 等邮箱输入框出现 (点击成功标志) ---
         if not wait_js(page, "!!document.querySelector('input[type=email]')", 10, '邮箱输入框'):
             print('❌ 点击后未出现邮箱输入框', flush=True)
-            os.system('DISPLAY=:1 import -window root /tmp/g6_v7_noemail.png')
+            try: page.screenshot(path='/tmp/g6_v7_noemail.png')
+            except Exception: pass
             browser.close(); time.sleep(3); continue
 
         # --- 填邮箱 → 点 Sign up ---
@@ -185,13 +186,15 @@ def main():
         # --- 等验证码输入框 ---
         if not wait_js(page, "!!document.querySelector('input[name=code]')", 50, '验证码输入框', interval=2):
             print('❌ 验证码输入框未出现', flush=True)
-            os.system('DISPLAY=:1 import -window root /tmp/g6_v7_nocode.png')
+            try: page.screenshot(path='/tmp/g6_v7_nocode.png')
+            except Exception: pass
             browser.close(); time.sleep(3); continue
         code=pull_code(email,jwt,mail_base,timeout=90)
         print('4. 验证码:',code, flush=True)
         if not code:
             print('❌ 验证码超时', flush=True)
-            os.system('DISPLAY=:1 import -window root /tmp/g6_v7_notoken.png')
+            try: page.screenshot(path='/tmp/g6_v7_notoken.png')
+            except Exception: pass
             browser.close(); time.sleep(3); continue
 
         # --- 填验证码 → confirm ---
@@ -274,7 +277,8 @@ def main():
                 pass
         if not token_ok:
             print(f'❌ token 未出现 (节点{port}), 换节点重试', flush=True)
-            os.system('DISPLAY=:1 import -window root /tmp/g6_tsfail_v7.png')
+            try: page.screenshot(path='/tmp/g6_tsfail_v7.png')
+            except Exception: pass
             browser.close()
             time.sleep(3)
             continue
