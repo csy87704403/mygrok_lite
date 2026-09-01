@@ -38,6 +38,32 @@ def _get_session(port):
     from curl_cffi import requests as cffi
     return cffi.Session(impersonate='chrome131')
 
+# ============ 出口模式: 直连本地IP ============
+_EDESS_DIRECT_CACHE = (0.0, '0')
+def is_egress_direct():
+    """是否使用本地IP直连作为出口(不走任何代理节点). 带5秒缓存."""
+    global _EDESS_DIRECT_CACHE
+    now = time.time()
+    if now - _EDESS_DIRECT_CACHE[0] < 5:
+        return _EDESS_DIRECT_CACHE[1] == '1'
+    try:
+        from services.settings_service import get_setting
+        v = get_setting('egress_direct', '0')
+    except Exception:
+        v = '0'
+    _EDESS_DIRECT_CACHE = (now, v)
+    return v == '1'
+
+def _apply_egress(s, node_port=None):
+    """为 curl_cffi Session 设置出口代理. 直连模式不设置 proxies (走本机IP)."""
+    if is_egress_direct():
+        s.proxies = {}
+        return s
+    from services.registration_service import get_node_proxy
+    p_url, _ = get_node_proxy(str(node_port))
+    s.proxies = {'http': p_url, 'https': p_url}
+    return s
+
 # ============ 节点延迟缓存 ============
 _node_latency = {}  # port -> avg_latency_ms (仅探测延迟, 纯净连接速度)
 _latency_lock = threading.Lock()
@@ -451,14 +477,18 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
     """用单个账号尝试所有节点, 返回 (data, None) 或 None(换账号)"""
     import time as _t
     account_failed = False
-    for port in ports:
+    direct = is_egress_direct()
+    _ports = [None] if direct else ports
+    for port in _ports:
         if account_failed:
             break
         try:
             s = _get_session(port)
-            from services.registration_service import get_node_proxy
-            p_url, _ = get_node_proxy(str(port))
-            s.proxies = {'http': p_url, 'https': p_url}
+            if direct:
+                s.proxies = {}
+            else:
+                p_url, _ = get_node_proxy(str(port))
+                s.proxies = {'http': p_url, 'https': p_url}
             headers = {
                 'Authorization': f'Bearer {at}',
                 'X-XAI-Token-Auth': 'xai-grok-cli',
@@ -784,8 +814,11 @@ def _probe_upstream_models():
             return []
         node = acc.get('node_port', 'mihomo:8001') or 'mihomo:8001'
         s = cffi.Session(impersonate='chrome131')
-        p_url, _ = get_node_proxy(str(node))
-        s.proxies = {'http': p_url, 'https': p_url}
+        if is_egress_direct():
+            s.proxies = {}
+        else:
+            p_url, _ = get_node_proxy(str(node))
+            s.proxies = {'http': p_url, 'https': p_url}
         r = s.get('https://cli-chat-proxy.grok.com/v1/models',
                   headers={'Authorization': f'Bearer {at}', 'X-XAI-Token-Auth': 'xai-grok-cli'},
                   timeout=10)
@@ -993,9 +1026,12 @@ def _refresh_quota_loop():
                         email = row['email']
                         at = row['access_token']
                         node_port = row.get('node_port') or '8078'
-                        p_url, _ = get_node_proxy(str(node_port))
                         s = cffi.Session(impersonate='chrome131')
-                        s.proxies = {'http': p_url, 'https': p_url}
+                        if is_egress_direct():
+                            s.proxies = {}
+                        else:
+                            p_url, _ = get_node_proxy(str(node_port))
+                            s.proxies = {'http': p_url, 'https': p_url}
                         # 使用 chat/completions 获取 quota headers
                         r = s.post('https://cli-chat-proxy.grok.com/v1/chat/completions',
                                  json={'model': 'grok-4.5', 'messages': [{'role': 'user', 'content': 'ping'}]},

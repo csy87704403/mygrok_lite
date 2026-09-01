@@ -197,6 +197,18 @@ async def delete_node(node_id: int):
 async def toggle_node(node_id: int, body: dict):
     return registration_service.toggle_node(node_id, body.get('status', 'disabled'))
 
+@app.get("/api/egress")
+async def get_egress():
+    """获取当前出口模式: 是否使用本地IP直连(不走代理节点)"""
+    return {'direct': settings_service.get_setting('egress_direct', '0') == '1'}
+
+@app.post("/api/egress")
+async def set_egress(body: dict):
+    """设置出口模式: {direct: true/false}. 勾选=使用本地IP直连作为出口IP"""
+    direct = bool(body.get('direct', False))
+    settings_service.set_setting('egress_direct', '1' if direct else '0')
+    return {'ok': True, 'direct': direct}
+
 @app.post("/api/register")
 async def register(body: dict):
     """自定义注册: {count, node_ports: [], domain: '', username_prefix: ''}"""

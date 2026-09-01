@@ -32,6 +32,13 @@ refresh.nodes = async function() {
   <div class="card">
     <h3>节点池 (IP 代理池)</h3>
     <p style="margin-bottom:12px;color:#94a3b8">支持本地 Mihomo 端口 (如 8047) 和外部代理地址 (如 1.2.3.4:8080 或 socks5://ip:port)。注册/续期/API 调用会随机从活跃节点池选择出口 IP。当前 <b style="color:#16a34a">${active} 活跃</b> / ${nodes.length} 总数</p>
+    <div style="margin:10px 0;padding:10px 12px;border:1px solid #334155;border-radius:8px;background:#0f172a;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;color:#e2e8f0">
+        <input type="checkbox" id="egress-direct" onchange="toggleEgress(this.checked)" style="width:16px;height:16px;accent-color:#16a34a">
+        使用本地IP直连作为出口（不走任何代理节点）
+      </label>
+      <span id="egress-status" style="font-size:12px;color:#94a3b8"></span>
+    </div>
     <div class="row">
       <div style="flex:1"><label>批量粘贴节点 (每行一个)</label>
         <textarea id="node-batch" rows="6" style="width:100%;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:8px;font-family:monospace;font-size:12px" placeholder="8047&#10;8081&#10;1.2.3.4:8080&#10;socks5://5.6.7.8:1080&#10;http://user:pass@host:port"></textarea>
@@ -78,7 +85,29 @@ refresh.nodes = async function() {
   });
   html += `</table></div></div>`;
   el.innerHTML = html;
+  loadEgress();
 };
+
+async function loadEgress() {
+  try {
+    const r = await api('/api/egress');
+    const cb = document.getElementById('egress-direct');
+    if (cb) cb.checked = !!(r && r.direct);
+    const st = document.getElementById('egress-status');
+    if (st) st.textContent = (r && r.direct) ? '✅ 当前出口：本地IP直连' : '🔀 当前出口：代理节点池';
+  } catch (e) {}
+}
+
+async function toggleEgress(checked) {
+  try {
+    const r = await api('/api/egress', 'POST', { direct: checked });
+    const st = document.getElementById('egress-status');
+    if (st) st.textContent = (r && r.direct) ? '✅ 当前出口：本地IP直连' : '🔀 当前出口：代理节点池';
+    toast(checked ? '已切换为本地IP直连（出口走平台本机IP）' : '已恢复为代理节点池出口', 'ok');
+  } catch (e) {
+    toast('切换失败', 'err');
+  }
+}
 
 async function addNodesBatch() {
   const text = document.getElementById('node-batch').value.trim();
