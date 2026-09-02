@@ -313,7 +313,12 @@ def main():
         sso=''
         try:
             import urllib.request
-            pages=json.load(urllib.request.urlopen('http://127.0.0.1:9222/json'))
+            # 关键: CDP 是本机 127.0.0.1:9222, 必须绕过代理。
+            # urllib 默认读 http_proxy 环境变量, 而 Karing 模式下父进程注入了
+            # HTTP_PROXY=http://host.docker.internal:3066, 会把本机 CDP 请求也送进
+            # Karing -> Karing 连不到容器内部 9222 -> HTTP 502 Bad Gateway -> 读不到 SSO。
+            _noproxy_opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            pages=json.load(_noproxy_opener.open('http://127.0.0.1:9222/json', timeout=15))
             pg=[p for p in pages if p.get('type')=='page' and 'stripe' not in p.get('url','') and p.get('url','').startswith('http')][0]
             import websocket
             ws=websocket.create_connection(pg['webSocketDebuggerUrl'],timeout=15)

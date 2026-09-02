@@ -351,6 +351,13 @@ class RegistrationManager:
         if _karing:
             env['HTTPS_PROXY'] = 'http://host.docker.internal:3066'
             env['HTTP_PROXY'] = 'http://host.docker.internal:3066'
+            env['https_proxy'] = 'http://host.docker.internal:3066'
+            env['http_proxy'] = 'http://host.docker.internal:3066'
+            # 必须排除本机地址: 脚本通过 CDP(127.0.0.1:9222) 读取浏览器 SSO cookie,
+            # 若不排除, urllib 会把该本机请求也送进 Karing -> HTTP 502 -> 读不到 SSO。
+            # 下载源(cloakbrowser.dev / github.com)不在排除列表, 仍走代理。
+            env['NO_PROXY'] = '127.0.0.1,localhost,::1,0.0.0.0'
+            env['no_proxy'] = '127.0.0.1,localhost,::1,0.0.0.0'
 
         proc = subprocess.Popen(
             ['/usr/local/bin/python3.11', script],
