@@ -46,6 +46,7 @@ refresh.register = async function() {
         <input type="text" id="reg-ports" placeholder="留空用全部, 或用逗号指定多个: 8047,8063,8081">
       </div>
       <button class="primary" onclick="startRegister()">开始注册</button>
+      <button class="danger" id="btn-stop-reg-top" style="background:#dc2626;color:#fff;border:0;display:none" onclick="stopRegister()">🛑 停止注册</button>
     </div>
     <div style="margin-top:6px">
       <span class="badge">提示: 注册使用 MCDP 方案 (Mac指纹 + 物理点击 Turnstile)</span>
@@ -76,6 +77,24 @@ refresh.register = async function() {
     </div>
     <div id="reg-poll-status" style="font-size:11px;color:#64748b;margin-top:4px"></div>
   </div>`;
+
+  // 切回本tab时自动接管仍在运行的注册任务: 否则停止按钮随页面重建而消失,
+  // 任务在后台跑却无从停止 (正是"注册一开始就无法停止"的体感来源)。
+  try {
+    const rr = await api('/api/register/running');
+    const running = (rr && rr.data && rr.data.running) || [];
+    if (running.length) {
+      const t = running[0];
+      const tidInput = document.getElementById('reg-task-id');
+      if (tidInput) tidInput.value = t.task_id;
+      currentRegTask = t.task_id;
+      regStopVisible(true);
+      if (!registerPoll) {
+        registerPoll = true;
+        pollRegisterTask(t.task_id);
+      }
+    }
+  } catch (e) {}
 };
 
 // ===== 临时邮箱配置 CRUD =====
@@ -110,12 +129,25 @@ async function startRegister() {
     toast('注册任务已启动: ' + r.data.task_id, 'ok');
     document.getElementById('reg-task-id').value = r.data.task_id;
     registerPoll = true;
+    currentRegTask = r.data.task_id;
+    regStopVisible(true);          // 启动即显示停止按钮
     pollRegisterTask(r.data.task_id);
   } else {
     toast('启动失败: ' + JSON.stringify(r.data), 'err');
   }
 }
 let registerPoll = false;
+let currentRegTask = '';
+
+// 统一控制所有停止按钮的显隐。
+// 注意: 停止按钮分散在顶部按钮区 + 日志面板两处, 且日志面板会被 regLogShow() 重建,
+// 所以必须每次实时查询 DOM, 不能缓存元素引用 (缓存会因面板重建变成失效的游离节点)。
+function regStopVisible(show) {
+  ['btn-stop-reg-top', 'btn-stop-reg'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.style.display = show ? 'inline-block' : 'none';
+  });
+}
 
 // ============ 注册日志面板 (顶部, 持久化) ============
 window._regLogHTML = '';
@@ -155,9 +187,9 @@ function regLogHide() {
 
 // 持续轮询注册任务 (每3秒), 实时显示逐步日志; 结束后刷新账号列表
 async function pollRegisterTask(taskId) {
-  const stopBtn = document.getElementById('btn-stop-reg');
   const pollStatus = document.getElementById('reg-poll-status');
   regLogShow('注册任务运行中...');
+  regStopVisible(true);   // 必须在 regLogShow 之后: 面板此刻才插入 DOM
   while (registerPoll) {
     try {
       const r = await api('/api/register/task/' + taskId);
@@ -166,11 +198,12 @@ async function pollRegisterTask(taskId) {
       const statusText = `状态: ${t.status} · 成功${t.registered||0} · 失败${t.failed||0}`;
       regLogUpdate(t.log || [], statusText);
       if (pollStatus) pollStatus.textContent = statusText;
-      if (stopBtn) stopBtn.style.display = (t.status === 'running') ? 'inline-block' : 'none';
+      regStopVisible(t.status === 'running');   // 实时查询 DOM, 不缓存引用
 
       if (t.status !== 'running') {
         registerPoll = false;
-        if (stopBtn) stopBtn.style.display = 'none';
+        currentRegTask = '';
+        regStopVisible(false);
         try { if (typeof refresh.accounts === 'function') refresh.accounts(); } catch(e) {}
         if (t.status === 'done') {
           const finalMsg = `注册完成: 成功${t.registered||0}, 失败${t.failed||0}`;
@@ -194,21 +227,42 @@ async function queryTask(id) {
   if (!taskId) { toast('请输入任务ID', 'err'); return; }
   const r = await api('/api/register/task/' + taskId);
   const t = r.data;
-  const stopBtn = document.getElementById('btn-stop-reg');
   const statusText = `状态: ${t.status} · 成功${t.registered||0} · 失败${t.failed||0}`;
   regLogShow(statusText);
   regLogUpdate((t.log || []).concat([`--- 状态: ${t.status} ---`]), statusText);
-  if (stopBtn) stopBtn.style.display = (t.status === 'running') ? 'inline-block' : 'none';
+  currentRegTask = taskId;
+  regStopVisible(t.status === 'running');   // 同样在 regLogShow 之后实时查询
 }
 
 async function stopRegister() {
-  if (!confirm('确定停止当前注册任务？正在注册的会被终止，后续不再启动。')) return;
-  const taskId = document.getElementById('reg-task-id').value;
-  if (!taskId) { toast('无任务ID', 'err'); return; }
-  const r = await api('/api/register/task/' + taskId + '/stop', 'POST');
-  toast('已发送停止信号: ' + (r.data.msg || ''), 'err');
-  registerPoll = false;
-  setTimeout(() => { try { if (typeof refresh.accounts === 'function') refresh.accounts(); } catch(e){} }, 1500);
+  const taskId = currentRegTask || document.getElementById('reg-task-id').value;
+  // 不弹 confirm: 停止要快, 且用户点按钮时意图已明确
+  regStopVisible(true);
+  ['btn-stop-reg-top', 'btn-stop-reg'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) { b.disabled = true; b.textContent = '⏹ 停止中...'; }
+  });
+  try {
+    // 用 stop-all: 自动补号(auto_fill)自行启动的任务前端拿不到 task_id,
+    // 单任务 stop 停不掉它, 必须全停。同时会清掉补号在途标记防止被立即拉起。
+    const r = await api('/api/register/stop-all', 'POST', {});
+    const d = r.data || {};
+    const n = d.count || 0;
+    toast(n > 0 ? `已停止 ${n} 个注册任务` : '已发送停止信号', 'ok');
+    if (taskId) {
+      // 继续轮询到终态, 让用户看到"已停止"而不是卡在"运行中"
+      registerPoll = true;
+      pollRegisterTask(taskId);
+    }
+  } catch (e) {
+    toast('停止失败: ' + e, 'err');
+  } finally {
+    ['btn-stop-reg-top', 'btn-stop-reg'].forEach(id => {
+      const b = document.getElementById(id);
+      if (b) { b.disabled = false; b.textContent = '🛑 停止注册'; }
+    });
+    setTimeout(() => { try { if (typeof refresh.accounts === 'function') refresh.accounts(); } catch(e){} }, 1500);
+  }
 }
 
 async function listTasks() {

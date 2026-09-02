@@ -232,6 +232,33 @@ async def stop_register_task(task_id: str):
     """停止注册任务: 终止当前正在运行的子进程 + 不再启动下一个"""
     return registration_service.registration_manager.stop(task_id)
 
+@app.post("/api/register/stop-all")
+async def stop_all_register(body: dict = None):
+    """停止全部注册任务。
+
+    必需原因: 自动补号(auto_fill)自行调用 register(), 其 task_id 只在后端内存,
+    前端无法拿到, 单任务 stop 接口停不掉它。
+    body: {disable_auto_fill: true} 可同时关闭自动补号总开关, 防止刚停又被拉起。
+    """
+    res = registration_service.registration_manager.stop_all()
+    if body and body.get('disable_auto_fill'):
+        try:
+            settings_service.set_setting('auto_fill_enabled', '0')
+            res['auto_fill_disabled'] = True
+        except Exception as e:
+            res['auto_fill_disabled'] = False
+            res['auto_fill_error'] = str(e)
+    return res
+
+@app.get("/api/register/running")
+async def list_running_register():
+    """列出当前运行中的注册任务 (前端据此显示停止按钮/恢复轮询状态)"""
+    mgr = registration_service.registration_manager
+    with mgr.lock:
+        running = [{'task_id': tid, **{k: v for k, v in t.items() if k != 'log'}}
+                   for tid, t in mgr.tasks.items() if t.get('status') == 'running']
+    return {'running': running, 'count': len(running)}
+
 # ============ 临时邮箱域名配置 ============
 
 @app.get("/api/mail-domains")

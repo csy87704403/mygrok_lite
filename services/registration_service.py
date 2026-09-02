@@ -297,23 +297,84 @@ class RegistrationManager:
         t.start()
         return task_id
 
+    def _kill_proc_group(self, proc, task_id, tag=''):
+        """杀掉注册子进程所在的整个进程组。
+
+        关键: Popen 用了 start_new_session=True, 子进程处于独立进程组。
+        只 terminate()/kill() 主进程, 组内的 chromium 会变成孤儿残留,
+        继续占用 9222 调试端口 -> 下一次注册启动浏览器直接失败。
+        因此必须 killpg 杀整组。
+        """
+        import signal as _s
+        if not proc:
+            return False
+        killed = False
+        try:
+            if proc.poll() is not None:
+                return False  # 已退出
+            try:
+                pgid = os.getpgid(proc.pid)
+            except Exception:
+                pgid = None
+            if pgid:
+                os.killpg(pgid, _s.SIGKILL)   # 整组连浏览器一起杀
+                killed = True
+            else:
+                proc.kill()
+                killed = True
+            try:
+                proc.wait(timeout=5)          # 回收, 避免僵尸进程
+            except Exception:
+                pass
+        except Exception as e:
+            self._log(task_id, f"⚠️ 终止子进程异常{tag}: {e}")
+        return killed
+
     def stop(self, task_id):
-        """停止注册任务: 置停止标志 + 杀掉正在运行的子进程, 立即返回"""
+        """停止注册任务: 置停止标志 + 杀掉正在运行的子进程(整个进程组), 立即返回"""
         with self.lock:
             self.stop_flags[task_id] = True
             self.tasks.get(task_id, {}).setdefault('log', []).append("正在终止子进程...")
             proc = self.procs.get(task_id)
-        if proc:
+        killed = self._kill_proc_group(proc, task_id)
+        # 兜底清理: 杀掉可能残留的 chromium (占用9222会导致下次注册起不来)
+        try:
+            subprocess.run(['pkill', '-f', 'remote-debugging-port=9222'],
+                           capture_output=True, timeout=5)
+        except Exception:
+            pass
+        if killed:
+            self._log(task_id, "🛑 子进程已终止 (含浏览器进程组)")
+        else:
+            self._log(task_id, "🛑 已置停止标志 (当前无运行中的子进程, 后续账号不再启动)")
+        return {'ok': True, 'msg': 'stop signal sent', 'killed': killed}
+
+    def stop_all(self):
+        """停止全部注册任务 (含自动补号启动的、前端拿不到 task_id 的那些)。
+
+        自动补号(auto_fill)会自行调用 register(), 其 task_id 只存在于后端内存,
+        前端无从得知, 单任务 stop 接口停不掉它 —— 必须用这个全停。
+        """
+        stopped = []
+        with self.lock:
+            running_ids = [tid for tid, t in self.tasks.items()
+                           if t.get('status') == 'running']
+            procs = dict(self.procs)
+        for tid in running_ids:
             try:
-                proc.terminate()
-                import time as _t
-                _t.sleep(0.5)
-                if proc.poll() is None:
-                    proc.kill()
-                self.tasks.get(task_id, {}).setdefault('log', []).append("子进程已终止")
+                self.stop(tid)
+                stopped.append(tid)
             except Exception as e:
-                self.tasks.get(task_id, {}).setdefault('log', []).append(f"终止子进程异常: {e}")
-        return {'ok': True, 'msg': 'stop signal sent'}
+                print(f"[register] stop_all 停止 {tid} 异常: {e}", flush=True)
+        # 同时停掉自动补号的在途标记, 防止刚停完又被立即拉起
+        try:
+            from services import api_service
+            with api_service._fill_lock:
+                api_service._fill_running = False
+            api_service._fill_state['in_progress'] = False
+        except Exception as e:
+            print(f"[register] stop_all 清理 auto_fill 状态异常: {e}", flush=True)
+        return {'ok': True, 'stopped': stopped, 'count': len(stopped)}
 
     def _register_one(self, task_id, ports, domain):
         """调用 grok_auto_v6.py 真实注册单个账号 (MCDP方案)
