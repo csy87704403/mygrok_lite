@@ -24,6 +24,12 @@ else:
 
 NODES = [n for n in os.environ.get("GROK_NODES", "8078,8083,8086,8047").split(",") if n.strip()]
 
+# Karing 出口开关: EGRESS_KARING=1 时, 注册浏览器/SSO会话走 Karing 代理 (宿主机 127.0.0.1:3066),
+# 容器内用 host.docker.internal 穿透到宿主机. 由 registration_service 根据平台复选框注入.
+# 注意: 不是"裸奔真实IP", 而是走 Karing 的出口IP.
+KARING_PROXY = 'http://host.docker.internal:3066'
+EGRESS_KARING = os.environ.get("EGRESS_KARING", "0") == "1"
+
 # CPA/账号产出目录 (部署时通过环境变量/挂载卷指定, 不硬编码)
 GROK_ACCOUNTS_DIR = os.environ.get("GROK_ACCOUNTS_DIR", "/root/grok_accounts")
 os.makedirs(GROK_ACCOUNTS_DIR, exist_ok=True)
@@ -118,19 +124,26 @@ def set_input(page, selector, value, desc='输入框'):
 def main():
     max_tries = 3
     tried = set()
+    if EGRESS_KARING:
+        print(f"🌐 Karing 代理出口: 注册浏览器/SSO会话走 Karing ({KARING_PROXY}, 容器内穿透到宿主机 127.0.0.1:3066)", flush=True)
     for attempt in range(1, max_tries+1):
-        candidates = [n for n in NODES if n not in tried] or NODES
-        port = random.choice(candidates)
-        tried.add(port)
-        # 代理地址: 兼容两种节点格式
-        #   - 纯数字端口 (如 8078) -> 本地 127.0.0.1:8078
-        #   - host:port 或 容器名:port (如 mihomo:8108) -> http://mihomo:8108
-        if '://' in str(port):
-            proxy = port  # 已带协议 (http://... / socks5://...)
-        elif ':' in str(port):
-            proxy = f"http://{port}"
+        if EGRESS_KARING:
+            proxy = KARING_PROXY
+            node_desc = 'karing(127.0.0.1:3066)'
         else:
-            proxy = f"http://127.0.0.1:{port}"
+            candidates = [n for n in NODES if n not in tried] or NODES
+            port = random.choice(candidates)
+            tried.add(port)
+            # 代理地址: 兼容两种节点格式
+            #   - 纯数字端口 (如 8078) -> 本地 127.0.0.1:8078
+            #   - host:port 或 容器名:port (如 mihomo:8108) -> http://mihomo:8108
+            if '://' in str(port):
+                proxy = port  # 已带协议 (http://... / socks5://...)
+            elif ':' in str(port):
+                proxy = f"http://{port}"
+            else:
+                proxy = f"http://127.0.0.1:{port}"
+            node_desc = str(port)
         seed=random.randint(10000,99999)
         tz=random.choice(TZ_POOL)
         email,jwt,mail_base=create_mail()
@@ -141,12 +154,14 @@ def main():
         # 随机生成账号密码 (避免所有账号共用同一密码)
         password = ''.join(random.choices('ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%^&*', k=16))
         given, family = random_name()
-        print(f"1. 邮箱:{email} 节点:{port} seed:{seed} tz:{tz} 名字:{given} {family} (try {attempt}/{max_tries})", flush=True)
+        print(f"1. 邮箱:{email} 节点:{node_desc} seed:{seed} tz:{tz} 名字:{given} {family} (try {attempt}/{max_tries})", flush=True)
 
-        browser=launch(headless=True, proxy={'server':proxy},
-                       timezone=tz, locale='en-US',
-                       args=['--fingerprint-platform=macos',f'--fingerprint={seed}',
-                             '--remote-debugging-port=9222','--remote-allow-origins=*'])
+        launch_kwargs = dict(headless=True, timezone=tz, locale='en-US',
+                             args=['--fingerprint-platform=macos',f'--fingerprint={seed}',
+                                   '--remote-debugging-port=9222','--remote-allow-origins=*'])
+        if proxy:
+            launch_kwargs['proxy'] = {'server': proxy}
+        browser=launch(**launch_kwargs)
         page=browser.new_page()
         try: page.bring_to_front()
         except: pass
@@ -276,7 +291,7 @@ def main():
             except Exception:
                 pass
         if not token_ok:
-            print(f'❌ token 未出现 (节点{port}), 换节点重试', flush=True)
+            print(f'❌ token 未出现 (节点{node_desc}), 换节点重试', flush=True)
             try: page.screenshot(path='/tmp/g6_tsfail_v7.png')
             except Exception: pass
             browser.close()
@@ -330,7 +345,10 @@ def main():
                 import urllib.parse, base64, hashlib
                 from curl_cffi import requests as cffi2
                 s = cffi2.Session(impersonate='chrome131')
-                s.proxies = {'http': proxy, 'https': proxy}
+                if proxy:
+                    s.proxies = {'http': proxy, 'https': proxy}
+                else:
+                    s.proxies = {}
                 s.headers.update({'user-agent': sso2cpa.UA, 'accept': '*/*',
                                   'origin': 'https://accounts.x.ai', 'referer': 'https://accounts.x.ai/'})
                 dev_ep, tok_ep, auth_ep = sso2cpa.discover(s)
@@ -346,8 +364,9 @@ def main():
                         if at and rt:
                             doc = sso2cpa.cpa_document(at, rt, idt, te, '', email)
                             doc['registration_context'] = {
-                                'node_port': port,
-                                'node_ip': port,
+                                'node_port': proxy or 'direct',
+                                'node_ip': proxy or 'direct',
+                                'egress_karing': EGRESS_KARING,
                                 'fingerprint_seed': seed,
                                 'fingerprint_platform': 'macos',
                                 'timezone': tz,

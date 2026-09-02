@@ -35,7 +35,7 @@ refresh.nodes = async function() {
     <div style="margin:10px 0;padding:10px 12px;border:1px solid #334155;border-radius:8px;background:#0f172a;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:600;color:#e2e8f0">
         <input type="checkbox" id="egress-direct" onchange="toggleEgress(this.checked)" style="width:16px;height:16px;accent-color:#16a34a">
-        使用本地IP直连作为出口（不走任何代理节点）
+        通过 Karing 代理出口（127.0.0.1:3066，非本机真实IP）
       </label>
       <span id="egress-status" style="font-size:12px;color:#94a3b8"></span>
     </div>
@@ -91,21 +91,21 @@ refresh.nodes = async function() {
 async function loadEgress() {
   try {
     const r = await api('/api/egress');
-    const direct = !!(r && r.data && r.data.direct);
+    const karing = !!(r && r.data && r.data.karing);
     const cb = document.getElementById('egress-direct');
-    if (cb) cb.checked = direct;
+    if (cb) cb.checked = karing;
     const st = document.getElementById('egress-status');
-    if (st) st.textContent = direct ? '✅ 当前出口：本地IP直连' : '🔀 当前出口：代理节点池';
+    if (st) st.textContent = karing ? '✅ 当前出口：Karing 代理 (127.0.0.1:3066)' : '🔀 当前出口：mihomo 代理节点池';
   } catch (e) {}
 }
 
 async function toggleEgress(checked) {
   try {
-    const r = await api('/api/egress', 'POST', { direct: checked });
-    const direct = !!(r && r.data && r.data.direct);
+    const r = await api('/api/egress', 'POST', { karing: checked });
+    const karing = !!(r && r.data && r.data.karing);
     const st = document.getElementById('egress-status');
-    if (st) st.textContent = direct ? '✅ 当前出口：本地IP直连' : '🔀 当前出口：代理节点池';
-    toast(checked ? '已切换为本地IP直连（出口走平台本机IP）' : '已恢复为代理节点池出口', 'ok');
+    if (st) st.textContent = karing ? '✅ 当前出口：Karing 代理 (127.0.0.1:3066)' : '🔀 当前出口：mihomo 代理节点池';
+    toast(checked ? '已切换为 Karing 代理出口（走 127.0.0.1:3066，非本机真实IP）' : '已恢复为 mihomo 代理节点池出口', 'ok');
   } catch (e) {
     toast('切换失败', 'err');
   }

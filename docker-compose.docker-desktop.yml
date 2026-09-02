@@ -17,6 +17,14 @@ services:
     volumes:
       - grok_accounts:/root/grok_accounts
       - platform_data:/app/data
+      # cloakbrowser 浏览器二进制缓存 (~216MB): 不挂卷的话每次容器重建都要重新下载,
+      # 下载源不稳会直接导致注册失败。挂卷后一次下载永久复用。
+      - cloakbrowser_cache:/root/.cloakbrowser
+      # 源码 bind mount: 让容器内代码始终同步 host 最新改动, 避免容器重建后 docker cp 的运行时改动丢失
+      - ./main.py:/app/main.py
+      - ./services:/app/services
+      - ./static:/app/static
+      - ./scripts:/app/scripts
     ports:
       - "18080:18080"
     depends_on:
@@ -44,3 +52,5 @@ volumes:
     name: mygrok_lite_grok_accounts
   platform_data:
     name: mygrok_lite_platform_data
+  cloakbrowser_cache:
+    name: mygrok_lite_cloakbrowser_cache

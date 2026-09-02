@@ -199,15 +199,15 @@ async def toggle_node(node_id: int, body: dict):
 
 @app.get("/api/egress")
 async def get_egress():
-    """获取当前出口模式: 是否使用本地IP直连(不走代理节点)"""
-    return {'direct': settings_service.get_setting('egress_direct', '0') == '1'}
+    """获取当前出口模式: 是否使用 Karing 代理 (127.0.0.1:3066) 作为出口"""
+    return {'karing': settings_service.get_setting('egress_karing', '0') == '1'}
 
 @app.post("/api/egress")
 async def set_egress(body: dict):
-    """设置出口模式: {direct: true/false}. 勾选=使用本地IP直连作为出口IP"""
-    direct = bool(body.get('direct', False))
-    settings_service.set_setting('egress_direct', '1' if direct else '0')
-    return {'ok': True, 'direct': direct}
+    """设置出口模式: {karing: true/false}. 勾选=走 Karing 代理出口 (127.0.0.1:3066)"""
+    karing = bool(body.get('karing', False))
+    settings_service.set_setting('egress_karing', '1' if karing else '0')
+    return {'ok': True, 'karing': karing}
 
 @app.post("/api/register")
 async def register(body: dict):

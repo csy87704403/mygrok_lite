@@ -325,7 +325,8 @@ class RegistrationManager:
         script = config.REGISTER_SCRIPT  # /tmp/grok_auto_v6.py
         env = dict(os.environ)
         env['GROK_NODES'] = ','.join(str(p) for p in ports)   # 传整个节点池, 脚本内部重试换节点
-        env['DISPLAY'] = ':1'
+        # 注意: 不注入 DISPLAY —— 容器内无 X Server, 注册脚本是 headless=True;
+        # 注入 ':1' 会让部分图形库误判有显示环境, 历史上导致 headed browser 启动失败。
         # 从 DB 读取邮箱域名配置 (支持自动轮询/指定单域名)
         mails = active_mail_domains()
         if domain:
@@ -334,6 +335,22 @@ class RegistrationManager:
             self._log(task_id, f"⚠️ 没有可用的临时邮箱域名配置 (domain={domain or '自动'})，请先添加")
             return False, None, 'no mail domain configured'
         env['GROK_MAIL_CONFIG'] = json.dumps(mails, ensure_ascii=False)
+        # Karing 出口开关: 勾选"通过 Karing 代理出口(127.0.0.1:3066)"时,
+        # 注册浏览器/SSO会话也走 Karing 代理 (容器内用 host.docker.internal 穿透到宿主机).
+        # 与平台 api_service.is_egress_karing() 同源, 通过环境变量传给注册脚本.
+        try:
+            from services.settings_service import get_setting
+            _karing = get_setting('egress_karing', '0') == '1'
+        except Exception:
+            _karing = False
+        env['EGRESS_KARING'] = '1' if _karing else '0'
+        # 浏览器二进制首次下载(约216MB)由 cloakbrowser 内部 httpx 发起, 不走浏览器代理。
+        # 直连下载源在国内极易中途断开(SSL EOF / peer closed), 故给 httpx 也挂上代理
+        # (httpx 默认 trust_env=True, 会读 HTTPS_PROXY/HTTP_PROXY 环境变量)。
+        # 二进制已缓存在持久化卷 /root/.cloakbrowser, 正常不会重复下载, 此为兜底。
+        if _karing:
+            env['HTTPS_PROXY'] = 'http://host.docker.internal:3066'
+            env['HTTP_PROXY'] = 'http://host.docker.internal:3066'
 
         proc = subprocess.Popen(
             ['/usr/local/bin/python3.11', script],

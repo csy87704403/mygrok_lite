@@ -38,26 +38,32 @@ def _get_session(port):
     from curl_cffi import requests as cffi
     return cffi.Session(impersonate='chrome131')
 
-# ============ 出口模式: 直连本地IP ============
-_EDESS_DIRECT_CACHE = (0.0, '0')
-def is_egress_direct():
-    """是否使用本地IP直连作为出口(不走任何代理节点). 带5秒缓存."""
-    global _EDESS_DIRECT_CACHE
+# ============ 出口模式: 走 Karing 代理 ============
+# 容器内访问宿主机 Karing (127.0.0.1:3066) 必须用 host.docker.internal 穿透,
+# 不能用 127.0.0.1 (那是容器自己). 实测该地址可达, 出口IP=Karing上游IP(非容器真实IP).
+KARING_PROXY = 'http://host.docker.internal:3066'
+_EDESS_KARING_CACHE = (0.0, '0')
+def is_egress_karing():
+    """是否使用 Karing 代理作为出口 (127.0.0.1:3066). 带5秒缓存."""
+    global _EDESS_KARING_CACHE
     now = time.time()
-    if now - _EDESS_DIRECT_CACHE[0] < 5:
-        return _EDESS_DIRECT_CACHE[1] == '1'
+    if now - _EDESS_KARING_CACHE[0] < 5:
+        return _EDESS_KARING_CACHE[1] == '1'
     try:
         from services.settings_service import get_setting
-        v = get_setting('egress_direct', '0')
+        v = get_setting('egress_karing', '0')
     except Exception:
         v = '0'
-    _EDESS_DIRECT_CACHE = (now, v)
+    _EDESS_KARING_CACHE = (now, v)
     return v == '1'
 
+def _karing_proxy():
+    return {'http': KARING_PROXY, 'https': KARING_PROXY}
+
 def _apply_egress(s, node_port=None):
-    """为 curl_cffi Session 设置出口代理. 直连模式不设置 proxies (走本机IP)."""
-    if is_egress_direct():
-        s.proxies = {}
+    """为 curl_cffi Session 设置出口代理. Karing 模式走 Karing 代理, 否则走 mihomo 节点池."""
+    if is_egress_karing():
+        s.proxies = _karing_proxy()
         return s
     from services.registration_service import get_node_proxy
     p_url, _ = get_node_proxy(str(node_port))
@@ -477,18 +483,14 @@ def _try_account(account, at, ports, model, upstream_url, stream, body, api_key)
     """用单个账号尝试所有节点, 返回 (data, None) 或 None(换账号)"""
     import time as _t
     account_failed = False
-    direct = is_egress_direct()
-    _ports = [None] if direct else ports
+    karing = is_egress_karing()
+    _ports = [None] if karing else ports
     for port in _ports:
         if account_failed:
             break
         try:
             s = _get_session(port)
-            if direct:
-                s.proxies = {}
-            else:
-                p_url, _ = get_node_proxy(str(port))
-                s.proxies = {'http': p_url, 'https': p_url}
+            _apply_egress(s, port)
             headers = {
                 'Authorization': f'Bearer {at}',
                 'X-XAI-Token-Auth': 'xai-grok-cli',
@@ -814,11 +816,7 @@ def _probe_upstream_models():
             return []
         node = acc.get('node_port', 'mihomo:8001') or 'mihomo:8001'
         s = cffi.Session(impersonate='chrome131')
-        if is_egress_direct():
-            s.proxies = {}
-        else:
-            p_url, _ = get_node_proxy(str(node))
-            s.proxies = {'http': p_url, 'https': p_url}
+        _apply_egress(s, node)
         r = s.get('https://cli-chat-proxy.grok.com/v1/models',
                   headers={'Authorization': f'Bearer {at}', 'X-XAI-Token-Auth': 'xai-grok-cli'},
                   timeout=10)
@@ -1027,11 +1025,7 @@ def _refresh_quota_loop():
                         at = row['access_token']
                         node_port = row.get('node_port') or '8078'
                         s = cffi.Session(impersonate='chrome131')
-                        if is_egress_direct():
-                            s.proxies = {}
-                        else:
-                            p_url, _ = get_node_proxy(str(node_port))
-                            s.proxies = {'http': p_url, 'https': p_url}
+                        _apply_egress(s, node_port)
                         # 使用 chat/completions 获取 quota headers
                         r = s.post('https://cli-chat-proxy.grok.com/v1/chat/completions',
                                  json={'model': 'grok-4.5', 'messages': [{'role': 'user', 'content': 'ping'}]},
@@ -1097,9 +1091,8 @@ def _refresh_single_quota(email, node_port=None):
             return
         at = acc['access_token']
         port = node_port or acc.get('node_port') or 'mihomo:8001'
-        p_url, _ = get_node_proxy(str(port))
         s = cffi.Session(impersonate='chrome131')
-        s.proxies = {'http': p_url, 'https': p_url}
+        _apply_egress(s, port)
         r = s.post('https://cli-chat-proxy.grok.com/v1/chat/completions',
                    json={'model': 'grok-4.6', 'messages': [{'role': 'user', 'content': 'ping'}]},
                    headers={'Authorization': f'Bearer {at}', 'X-XAI-Token-Auth': 'xai-grok-cli',
