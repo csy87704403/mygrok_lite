@@ -1,5 +1,5 @@
 """Grok 账号管理平台 - 注册服务 (自定义节点池+临时邮箱)"""
-import subprocess, json, time, os, threading, random, sys
+import subprocess, json, time, os, threading, random, sys, re, glob
 from db import get_conn
 import config
 
@@ -233,6 +233,7 @@ class RegistrationManager:
             self._log(task_id, f"启动注册任务: 目标{count}个, 节点池={node_ports or f'全部({len(active_ports)}个active)'}, 域名={domain or '自动轮询'}")
             ports = node_ports or active_ports
             random.shuffle(ports)
+            task_started = time.time()   # 用于兜底筛选"本次新生成"的 CPA 文件
 
             done = 0
             while done < count:
@@ -254,18 +255,17 @@ class RegistrationManager:
                         continue
                     try:
                         # 传整个节点池给脚本: 脚本内部3次重试会随机换节点, 避免死磕风控节点
-                        ok, email, detail = self._register_one(task_id, ports, domain)
+                        ok, cpa_path, detail = self._register_one(task_id, ports, domain)
                     finally:
                         try:
                             DEGRADE_LOCK.release()
                         except Exception:
                             pass
                     if ok:
-                        self._log(task_id, f"✅ 注册成功: {email or '?'} (node 池内)")
+                        self._log(task_id, f"✅ 注册成功 (node 池内)")
                         self._set(task_id, registered=self.tasks[task_id].get('registered', 0) + 1)
-                        # 导入到账号库
-                        from services import account_service
-                        account_service.import_all_cpa()
+                        # 只导入本次产出的 CPA (禁止全目录重扫, 否则会复活用户已删除的账号)
+                        self._import_new_cpa(task_id, cpa_path, task_started)
                     else:
                         # 被停止时 detail 无需再报错
                         if self.stop_flags.get(task_id):
@@ -493,8 +493,41 @@ class RegistrationManager:
             return False, None, f'注册超时({REGISTER_TIMEOUT}s), 已终止'
         # 成功标志: DONE + 生成了CPA
         if 'DONE' in out and '✅ CPA' in out:
-            return True, None, '注册成功'
+            # 解析本次产出的 CPA 文件路径 (只导入这一个, 禁止整目录重扫)
+            m = re.search(r'CPA\s*已生成[:：]\s*(\S+)', out)
+            return True, (m.group(1) if m else None), '注册成功'
         return False, None, out[-300:]
+
+    def _import_new_cpa(self, task_id, cpa_path, since_ts):
+        """只把【本次注册产出的】CPA 入库。
+
+        严禁调用 import_all_cpa(): 它会把 /root/grok_accounts/cpa 下所有文件
+        INSERT OR REPLACE 回 accounts 表, 导致用户在面板上删掉的账号被"复活"。
+        用户在面板删号 = 明确意图, 任何自动流程都不得恢复。
+        """
+        from services import account_service
+        targets = []
+        if cpa_path and os.path.isfile(cpa_path):
+            targets = [cpa_path]
+        else:
+            # 兜底: 解析不到路径时, 只取任务启动之后新生成的 CPA 文件
+            for f in glob.glob(os.path.join(config.CPA_DIR, '*.json')):
+                try:
+                    if os.path.getmtime(f) >= since_ts - 5:
+                        targets.append(f)
+                except OSError:
+                    pass
+        n = 0
+        for f in targets:
+            email, err = account_service.import_cpa_file(f)
+            if email:
+                n += 1
+                self._log(task_id, f"📥 已入库: {email}")
+            elif err:
+                self._log(task_id, f"⚠️ CPA入库失败 {os.path.basename(f)}: {err}")
+        if not n:
+            self._log(task_id, "⚠️ 未找到本次注册产出的 CPA, 跳过入库")
+        return n
 
     def _log(self, task_id, msg):
         with self.lock:
